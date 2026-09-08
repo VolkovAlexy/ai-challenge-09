@@ -1,0 +1,87 @@
+# my_agent
+
+CLI-агент: TUI-чат с LLM по OpenAI-compatible API (стриминг SSE),
+мульти-агентность (вкладки) и slash-команды для настройки.
+
+## Запуск
+
+```bash
+uv sync          # зависимости
+uv run my-agent  # запуск чата
+```
+
+Опции:
+
+```bash
+uv run my-agent --config config.json          # свой config
+uv run my-agent --system-prompt my.md         # промпт стартового агента
+uv run my-agent --model openai:gpt-4o-mini    # модель стартового агента
+```
+
+## Настройка
+
+`config.json` в корне (в `.gitignore` — содержит API-ключи):
+
+```json
+{
+  "providers": {
+    "openai":  {"api_base": "https://api.openai.com/v1", "api_key": "sk-…", "models": ["gpt-4o-mini"]},
+    "ollama":  {"api_base": "http://localhost:11434/v1", "api_key": "", "models": ["llama3.1"]}
+  },
+  "default_model": "ollama:llama3.1",
+  "temperature": 0.7,
+  "top_p": 1.0,
+  "max_tokens": 4096,
+  "stop": []
+}
+```
+
+Модель — `provider:model`; список моделей только из config. `api_key` может
+быть пустым (ollama). Файла нет — создаётся дефолтный; невалидный — понятные
+ошибки по полям.
+
+## Команды
+
+| Команда | Описание |
+|---|---|
+| `/help` (F1) | список команд |
+| `/new [name]` | новый агент-вкладка |
+| `/close` | закрыть агента (повтор — подтверждение при активном запросе) |
+| `/name <name>` | переименовать агента |
+| `/model [provider:model]` | без аргумента — палитра выбора модели (фильтр, ↑↓, Enter); с аргументом — смена по имени |
+| `/temperature <0..2>` | температура |
+| `/top-p <0..1>` | top_p |
+| `/max-tokens <n>` | max_tokens |
+| `/stop <a,b>` | stop-sequences (`""` — очистить) |
+| `/system [path]` | показать / заменить системный промпт |
+| `/history` | история диалога |
+| `/clear` | очистить историю |
+| `/save [file]` | сессия в jsonl (по умолчанию `sessions/<ts>.jsonl`) |
+| `/load <file>` | загрузить сессию в активного агента |
+| `/exit` | выход |
+
+Tab — completion команд и моделей (readline-стиль: повторный Tab перебирает
+кандидатов). Ctrl+Tab / Ctrl+Shift+Tab — вкладки. Ctrl+C — 1-й раз отмена
+запроса, повторный — выход. Ctrl+Q — выход.
+
+## Архитектура (кратко)
+
+- `Agent` — plain-Python класс, инстанс на чат: свои настройки (клон дефолтов
+  config + runtime-override), промпт, `InMemorySession`. Общие ресурсы
+  (`LLMClient`, `ToolRegistry`, `Config`) — шаред.
+- Textual — тонкий рендер: состояние в агентах, стриминг в неактивной вкладке
+  продолжается, при переключении вывод догоняется; перерисовка батчится ~100 мс.
+- `LLMClient` — httpx + httpx-sse: POST `/chat/completions`, SSE, ретраи 3×
+  (1s/2s/4s) на 429/5xx/сеть; 400/401 — ошибка в чате, чат продолжается.
+- `ContextBuilder.build_messages(...)` — единственная точка сборки messages
+  (задел под RAG/память).
+- Заделы (протоколы + stub'ы): `LongTermMemory`, `ToolRegistry`, `McpAdapter`,
+  `KnowledgeBase`.
+
+## QA
+
+```bash
+uv run ruff check .
+uv run mypy my_agent
+uv run pytest
+```
