@@ -56,8 +56,8 @@ uv run my-agent --model openai:gpt-4o-mini    # модель стартовог�
 | `/system [path]` | показать / заменить системный промпт |
 | `/history` | история диалога |
 | `/clear` | очистить историю |
-| `/save [file]` | сессия в jsonl (по умолчанию `sessions/<ts>.jsonl`) |
-| `/load <file>` | загрузить сессию в активного агента |
+| `/session` | палитра всех сессий; выбор загружает сессию в активного агента (фильтр, ↑↓, Enter) |
+| `/export [file]` | экспорт сессии в jsonl (по умолчанию `sessions/<ts>.jsonl`) |
 | `/exit` | выход |
 
 Tab — completion команд и моделей (readline-стиль: повторный Tab перебирает
@@ -71,6 +71,9 @@ Tab — completion команд и моделей (readline-стиль: повт
   (`LLMClient`, `ToolRegistry`, `Config`) — шаред.
 - Textual — тонкий рендер: состояние в агентах, стриминг в неактивной вкладке
   продолжается, при переключении вывод догоняется; перерисовка батчится ~100 мс.
+- Сессии автосохраняются в SQLite (`sessions/sessions.db`) при каждом изменении —
+  ручного `/save` нет; `/session` выбирает и продолжает любую сохранённую сессию,
+  `/export` выгружает в jsonl.
 - `LLMClient` — httpx + httpx-sse: POST `/chat/completions`, SSE, ретраи 3×
   (1s/2s/4s) на 429/5xx/сеть; 400/401 — ошибка в чате, чат продолжается.
 - `ContextBuilder.build_messages(...)` — единственная точка сборки messages

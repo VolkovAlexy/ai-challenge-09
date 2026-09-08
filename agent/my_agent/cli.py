@@ -67,17 +67,22 @@ def chat(
         startup_model = model
 
     llm = LLMClient()
-    try:
-        AgentApp(
+
+    async def _run() -> None:
+        app = AgentApp(
             config=cfg,
             llm=llm,
             tools=ToolRegistry(),
             default_system_prompt=default_prompt,
             startup_system_prompt=startup_prompt,
             startup_model=startup_model,
-        ).run()
-    finally:
-        asyncio.run(llm.close())
+        )
+        try:
+            await app.run_async()
+        finally:
+            await llm.close()
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

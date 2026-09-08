@@ -39,7 +39,7 @@ my_agent/
 ├── pyproject.toml            # uv-проект, [project.scripts] my-agent = "my_agent.cli:main"
 ├── SYSTEM_PROMPT.md          # системный промпт (по умолчанию)
 ├── config.json               # настройки (в .gitignore — содержит API key)
-├── sessions/                 # файлы сессий для /save и /load (jsonl)
+├── sessions/                 # sessions.db (SQLite, автосохранение) + экспорт .jsonl
 └── my_agent/
     ├── cli.py                # entry: typer, парсинг аргументов, запуск Textual App
     ├── config/
@@ -54,7 +54,8 @@ my_agent/
     ├── commands/
     │   └── registry.py       # реестр команд {name, description, handler, apply_to_config?}
     ├── memory/
-    │   ├── session.py        # InMemorySession: история, save() → jsonl, load()
+    │   ├── session.py        # InMemorySession (история), SessionData, jsonl save/load (export)
+    │   ├── persistence.py    # SessionStore: SQLite (sessions.db), автосохранение, список/загрузка
     │   └── longterm.py       # [задел] протокол LongTermMemory (stub в v1)
     ├── tools/
     │   ├── registry.py       # [задел] ToolRegistry: {name, description, schema, execute}
@@ -66,7 +67,8 @@ my_agent/
             ├── message_list.py   # история + стриминг токенов
             ├── status_bar.py     # модель, temperature, max_tokens, имя агента
             ├── help_palette.py   # список команд по /help
-            └── model_palette.py  # палитра выбора модели (фильтр + OptionList) по /model
+            ├── model_palette.py  # палитра выбора модели (фильтр + OptionList) по /model
+            └── session_palette.py # палитра всех сессий (фильтр + OptionList) по /session
 ```
 
 ## 4. Ключевые архитектурные решения
@@ -94,18 +96,21 @@ my_agent/
    свои инструменты в тот же `ToolRegistry`.
 
 5. **Команды как данные.**
-   Реестр команд с метаданными даёт бесплатно: `/help`, tab-completion,
-   сериализацию настроек в config через `/save`.
+    Реестр команд с метаданными даёт бесплатно: `/help`, tab-completion,
+    сериализацию сессии в jsonl через `/export`.
 
 6. **Скопирование команд.**
-   Команды настройки (`/model`, `/temperature`, ...) применяются **к активному агенту**.
-   `config.json` — глобальный дефолт для новых агентов; `/save` записывает состояние
-   активного агента в файл сессии.
+    Команды настройки (`/model`, `/temperature`, ...) применяются **к активному агенту**.
+    `config.json` — глобальный дефолт для новых агентов; состояние агента автосохраняется
+    в `sessions/sessions.db`, `/export` выгружает его в jsonl.
 
-7. **Два уровня состояния.**
-   - Runtime-состояние агента (меняется командами на лету).
-   - `config.json` — источник истины по умолчанию; `/save` записывает runtime-состояние
-     активного агента, `/load` читает его в активного агента.
+7. **Автосохранение сессий (SQLite).**
+    - Runtime-состояние агента (история, настройки, промпт, имя) автосохраняется в
+      `SessionStore` (SQLite, `sessions/sessions.db`) при каждом изменении — ручного `/save`
+      нет. Закрыл/сбой — ничего не теряется (кроме ~100 мс незавершённого хода).
+    - `config.json` — источник дефолтов для новых агентов.
+    - `/session` — палитра всех сохранённых сессий; выбор загружает сессию в активного
+      агента (= продолжаем). `/export [file]` — выгрузка в jsonl.
 
 8. **Системный промпт.**
    - По умолчанию: `./SYSTEM_PROMPT.md` в корне; каждый новый агент получает его.
@@ -172,15 +177,14 @@ my_agent/
 | `/system [path]` | показать текущий системный промпт / заменить на файл `path` |
 | `/history` | показать текущую историю диалога |
 | `/clear` | очистить историю сессии |
-| `/save [file]` | сохранить сессию (история + настройки агента) в jsonl (по умолчанию `sessions/<timestamp>.jsonl`) |
-| `/load <file>` | загрузить сессию из файла в активного агента |
+| `/session` | палитра всех сохранённых сессий (SQLite, `sessions/sessions.db`); выбор загружает сессию в активного агента (фильтр, ↑↓ — навигация, Enter — загрузить, Esc — отмена; текущая помечена `*`) |
+| `/export [file]` | экспортировать сессию активного агента (история + настройки) в jsonl (по умолчанию `sessions/<timestamp>.jsonl`) |
 | `/exit` (или Ctrl+Q) | выход |
 
 Поведение:
 - `/<неизвестная команда>` — подсказка + список команд.
 - Tab-completion по первым символам `/<cmd>` и аргументам.
-- Команды, меняющие настройки, помечаются «не сохранено», если отличается от config.json;
-  `/save` синхронизирует.
+- Сессии автосохраняются в SQLite при каждом изменении агента — ручное сохранение не нужно.
 - Переключение вкладок: binding `Ctrl+Tab` / `Ctrl+Shift+Tab` (Textual), имя и модель
   видны на вкладке; индикатор, если агент активно стримит.
 
@@ -227,7 +231,7 @@ my_agent/
 5. `ui/`: Textual App, вкладка-агент, ChatInput, MessageList со стримингом, StatusBar.
 6. `commands/`: реестр + все команды v1 + tab-completion.
 7. Мульти-агентность: `/new`, `/close`, `/name`, TabbedContent, фоновые стримы.
-8. `memory/session.py`: /save, /load (jsonl).
+8. `memory/`: SessionStore (SQLite, автосохранение), session.py (jsonl save/load/export), /session, /export.
 9. Заделы: интерфейсы + stub'ы (longterm, tools, mcp, rag).
 10. README с инструкцией по запуску, `.gitignore` (config.json, sessions/, `.venv/`, `__pycache__/`).
 
@@ -238,7 +242,7 @@ my_agent/
 - `/new` создаёт второго агента; можно одновременно стримить в двух вкладках;
   переключение не теряет вывод.
 - `--system-prompt <path>` переопределяет системный промпт стартового агента.
-- `/save` + `/load` восстанавливают сессию после перезапуска.
+- Автосохранение + `/session` восстанавливают сессию после перезапуска (SQLite).
 - Смена `/model` между провайдерами (например, openai ↔ ollama) работает в одном чате;
   StatusBar показывает `provider:model`.
 - config.json валидируется pydantic, ошибки понятные.

@@ -1,5 +1,8 @@
 """ModelPalette: /model без аргумента открывает палитру, выбор меняет модель."""
 
+import tempfile
+from pathlib import Path
+
 from textual.pilot import Pilot
 
 from my_agent.config.schema import validate_config
@@ -25,6 +28,7 @@ def make_app() -> AgentApp:
         llm=LLMClient(),
         tools=ToolRegistry(),
         default_system_prompt="SP",
+        session_db=Path(tempfile.mkdtemp()) / "sessions.db",
     )
 
 

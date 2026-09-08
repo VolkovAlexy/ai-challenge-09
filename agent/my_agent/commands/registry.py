@@ -14,7 +14,6 @@ from typing import Protocol
 
 from my_agent.config.schema import Config
 from my_agent.core.agent import Agent
-from my_agent.memory.session import SessionError
 
 SESSIONS_DIR = Path("sessions")
 
@@ -33,6 +32,8 @@ class AppLike(Protocol):
     def quit(self) -> None: ...
 
     def config(self) -> Config: ...
+
+    def open_session_palette(self) -> None: ...
 
 
 @dataclass
@@ -266,7 +267,7 @@ def default_registry() -> CommandRegistry:
         agent.memory.clear()
         return "История очищена."
 
-    def _save(ctx: CommandContext) -> str | None:
+    def _export(ctx: CommandContext) -> str | None:
         agent = _require_agent(ctx)
         if agent is None:
             return "Нет активного агента."
@@ -276,22 +277,14 @@ def default_registry() -> CommandRegistry:
             else:
                 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
                 target = SESSIONS_DIR / f"{ts}.jsonl"
-            saved = agent.save(target)
+            saved = agent.export(target)
         except OSError as exc:
-            return f"Ошибка сохранения: {exc}"
-        return f"Сессия сохранена: {saved}"
+            return f"Ошибка экспорта: {exc}"
+        return f"Сессия экспортирована: {saved}"
 
-    def _load(ctx: CommandContext) -> str | None:
-        agent = _require_agent(ctx)
-        if agent is None:
-            return "Нет активного агента."
-        if not ctx.args:
-            return "Использование: /load <файл>"
-        try:
-            agent.load(ctx.args[0])
-        except SessionError as exc:
-            return f"Ошибка загрузки: {exc}"
-        return f"Сессия загружена в агента '{agent.name}'."
+    def _session(ctx: CommandContext) -> str | None:
+        ctx.app.open_session_palette()
+        return None
 
     def _exit(ctx: CommandContext) -> str | None:
         ctx.app.quit()
@@ -319,16 +312,14 @@ def default_registry() -> CommandRegistry:
     registry.register(Command("system", "показать / заменить системный промпт", _system, "[path]"))
     registry.register(Command("history", "показать историю диалога", _history))
     registry.register(Command("clear", "очистить историю сессии", _clear))
-    registry.register(Command("save", "сохранить сессию в jsonl", _save, "[file]"))
+    registry.register(
+        Command("export", "экспортировать сессию активного агента в jsonl", _export, "[file]")
+    )
     registry.register(
         Command(
-            "load",
-            "загрузить сессию из файла",
-            _load,
-            "<file>",
-            lambda ctx, prefix: sorted(
-                p.name for p in SESSIONS_DIR.glob("*.jsonl") if p.name.startswith(prefix)
-            ),
+            "session",
+            "палитра всех сессий; выбор загружает в активного агента",
+            _session,
         )
     )
     registry.register(Command("exit", "выход (или Ctrl+Q)", _exit))

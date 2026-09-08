@@ -45,8 +45,8 @@
 
 ## Команды (полный список — spec §6)
 /help, /new [name], /close, /name <name>, /model [provider:model], /temperature,
-/top-p, /max-tokens, /stop, /system [path], /history, /clear, /save [file],
-/load <file>, /exit. Tab-completion по командам и моделям. Незначимый ввод → /help-подсказка.
+/top-p, /max-tokens, /stop, /system [path], /history, /clear, /session, /export [file],
+/exit. Tab-completion по командам и моделям. Незначимый ввод → /help-подсказка.
 
 ## Поведение
 - Стриминг: батч перерисовки MessageList ~100 мс; один активный запрос на агента.
@@ -55,19 +55,21 @@
 - Вкладки: Ctrl+Tab/Ctrl+Shift+Tab, имя+модель на вкладке, индикатор стриминга.
 - Системный промпт: ./SYSTEM_PROMPT.md по умолчанию, --system-prompt <path> для
   стартового агента, /system [path] в сессии. Нет файла → понятная ошибка, старт не начинается.
-- /save → jsonl (sessions/<ts>.jsonl по умолчанию): история + настройки агента;
-  /load восстанавливает в активного агента.
+- Сессии автосохраняются в SQLite (sessions/sessions.db): история + настройки агента.
+  /session — палитра всех сессий, выбор загружает в активного агента;
+  /export → jsonl (sessions/<ts>.jsonl по умолчанию).
 
 ## Порядок реализации
 По spec §9 (каркас → config → llm-клиент → core без UI → Textual UI → команды
-→ мульти-агентность → save/load → заделы → README/.gitignore).
+→ мульти-агентность → session (SQLite, автосохранение, /session, /export)
+→ заделы → README/.gitignore).
 
 ## Критерии приёмки (spec §10)
 - `uv run my-agent` стартует, стриминг работает.
 - Все команды работают; /new создаёт второго агента; параллельный стриминг в двух
   вкладках без потери вывода; смена /model между провайдерами (openai ↔ ollama)
   в одном чате; StatusBar показывает provider:model.
-- --system-prompt переопределяет промпт; /save+/load восстанавливают сессию.
+- --system-prompt переопределяет промпт; автосохранение + /session восстанавливают сессию.
 - `ruff check .`, `mypy my_agent`, `pytest` — зелёные. Напиши pytest-тесты на
   config (валидация), context builder, agent.ask (с мок-клиентом LLM),
-  session save/load.
+  SessionStore (SQLite: снапшот/список/загрузка) и jsonl-экспорт.

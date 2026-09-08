@@ -12,6 +12,7 @@ import contextlib
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from textual.app import App
 from textual.binding import Binding
@@ -23,11 +24,13 @@ from my_agent.commands.registry import CommandContext, CommandRegistry, default_
 from my_agent.config.schema import AgentSettings, Config
 from my_agent.core.agent import Agent, AgentBusyError
 from my_agent.llm.client import LLMClient, LLMError
+from my_agent.memory.persistence import SessionStore
 from my_agent.tools.registry import ToolRegistry
 from my_agent.ui.widgets.chat_input import ChatInput
 from my_agent.ui.widgets.help_palette import HelpPalette
 from my_agent.ui.widgets.message_list import MessageList
 from my_agent.ui.widgets.model_palette import ModelPalette
+from my_agent.ui.widgets.session_palette import SessionPalette
 from my_agent.ui.widgets.status_bar import StatusBar
 
 TICK_INTERVAL = 0.1  # ~100 мс — батч перерисовки
@@ -36,11 +39,17 @@ CTRL_C_WINDOW = 3.0  # окно «повторный Ctrl+C — выход»
 
 @dataclass
 class ChatTab:
-    """Состояние вкладки вне Textual-виджетов: агент + заметки (вывод команд/ошибки)."""
+    """Состояние вкладки вне Textual-виджетов: агент + заметки (вывод команд/ошибки).
+
+    `session_id` — id в SessionStore; `_fingerprint` — след состояния для
+    автосохранения (тик сравнивает и пересохраняет изменившуюся вкладку).
+    """
 
     agent: Agent
     notes: list[tuple[str, str]] = field(default_factory=list)
     dirty: bool = True
+    session_id: str | None = None
+    _fingerprint: tuple[object, ...] = field(default_factory=tuple)
 
     def add_note(self, kind: str, text: str) -> None:
         self.notes.append((kind, text))
@@ -106,6 +115,7 @@ class AgentApp(App[None]):
         startup_system_prompt: str | None = None,
         startup_model: str | None = None,
         startup_name: str = "chat-1",
+        session_db: Path | None = None,
     ) -> None:
         super().__init__()
         self._config = config
@@ -116,6 +126,7 @@ class AgentApp(App[None]):
         self._startup_system_prompt = startup_system_prompt or default_system_prompt
         self._startup_model = startup_model
         self._startup_name = startup_name
+        self._store = SessionStore(session_db or Path("sessions") / "sessions.db")
         self._tabs: list[ChatTab] = []
         self._tab_ids: dict[int, str] = {}
         self._views: dict[int, AgentView] = {}
@@ -134,6 +145,13 @@ class AgentApp(App[None]):
             system_prompt=self._startup_system_prompt,
         )
         self.set_interval(TICK_INTERVAL, self._tick)
+
+    async def on_unmount(self) -> None:
+        """Финальный flush всех вкладок в store + закрытие подключения."""
+        try:
+            self._persist_all()
+        finally:
+            self._store.close()
 
     # --- AppLike (команды) ---
 
@@ -171,6 +189,7 @@ class AgentApp(App[None]):
             tools=self._tools,
         )
         tab = ChatTab(agent=agent)
+        self._persist_tab(tab)  # выдаёт session_id + начальный (пустой) снапшот
         tab_id = f"agent-{id(agent)}"
         self._tabs.append(tab)
         self._tab_ids[id(agent)] = tab_id
@@ -225,6 +244,31 @@ class AgentApp(App[None]):
             return
         tab.add_note("system", f"Модель: {model_id}")
 
+    def open_session_palette(self) -> None:
+        current = self.active_tab()
+        current_id = current.session_id if current is not None else None
+        self.push_screen(
+            SessionPalette(self._store.list(), current_id),
+            lambda session_id: self._on_session_picked(session_id),
+        )
+
+    def _on_session_picked(self, session_id: str | None) -> None:
+        """Загружает выбранную сессию в активного агента (= продолжаем её)."""
+        tab = self.active_tab()
+        if session_id is None or tab is None:
+            return
+        if tab.session_id == session_id:
+            tab.add_note("system", "Эта сессия уже открыта у активного агента.")
+            return
+        data = self._store.get(session_id)
+        if data is None:
+            tab.add_note("error", f"Сессия {session_id} не найдена.")
+            return
+        tab.agent.apply_session(data)
+        tab.session_id = session_id
+        tab.dirty = True
+        self._persist_tab(tab)  # фиксируем fingerprint, чтобы не перезаписывать лишнее
+
     def complete_command(self, line: str) -> list[str]:
         """Tab-completion строки ввода (использует активный агент как контекст)."""
         tab = self.active_tab()
@@ -250,6 +294,9 @@ class AgentApp(App[None]):
             return True
         if name == "model" and not args:
             self.open_model_palette(tab)
+            return True
+        if name == "session":
+            self.open_session_palette()
             return True
         ctx = CommandContext(app=self, agent=tab.agent)
         output = self._commands.run(ctx, text)
@@ -282,6 +329,7 @@ class AgentApp(App[None]):
             tab.add_note("error", f"Ошибка LLM: {exc}")
         except Exception as exc:
             tab.add_note("error", f"Непредвиденная ошибка: {exc}")
+        self._persist_tab(tab)  # завершённый ход фиксируем сразу (не дожидаясь тика)
 
     # --- таймер: батч-перерисовка и метки вкладок ---
 
@@ -293,6 +341,8 @@ class AgentApp(App[None]):
         tabbed = self.query_one(TabbedContent)
         for tab in self._tabs:
             tab_id = self._tab_ids[id(tab.agent)]
+            if self._tab_fingerprint(tab) != tab._fingerprint:
+                self._persist_tab(tab)
             label = self._tab_label(tab)
             if self._labels.get(tab_id) != label:
                 self._labels[tab_id] = label
@@ -306,6 +356,45 @@ class AgentApp(App[None]):
 
     def _view_of(self, tab: ChatTab) -> AgentView:
         return self._views[id(tab.agent)]
+
+    # --- автосохранение сессий ---
+
+    @staticmethod
+    def _tab_fingerprint(tab: ChatTab) -> tuple[object, ...]:
+        """Лёгкий след состояния вкладки: сравнение дешевле, чем запись."""
+        agent = tab.agent
+        history = agent.memory.history
+        last = history[-1].to_api() if history else None
+        settings = agent.settings
+        return (
+            len(history),
+            last,
+            agent.name,
+            settings.model,
+            settings.temperature,
+            settings.top_p,
+            settings.max_tokens,
+            tuple(settings.stop),
+            agent.system_prompt,
+        )
+
+    def _persist_tab(self, tab: ChatTab) -> None:
+        """Атомарный снапшот вкладки в store + фиксация fingerprint."""
+        if tab.session_id is None:
+            tab.session_id = self._store.new_id()
+        agent = tab.agent
+        self._store.snapshot(
+            tab.session_id,
+            agent.name,
+            agent.settings,
+            agent.system_prompt,
+            agent.memory.history,
+        )
+        tab._fingerprint = self._tab_fingerprint(tab)
+
+    def _persist_all(self) -> None:
+        for tab in self._tabs:
+            self._persist_tab(tab)
 
     # --- события вкладок ---
 

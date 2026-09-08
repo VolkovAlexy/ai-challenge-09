@@ -21,7 +21,7 @@ from my_agent.core.message import (
     ToolCall,
 )
 from my_agent.llm.client import LLMClient
-from my_agent.memory.session import InMemorySession, SessionData, load_session, save_session
+from my_agent.memory.session import InMemorySession, SessionData, save_session
 from my_agent.tools.registry import ToolRegistry
 
 CANCELLED_MARK = "… (запрос отменён)"
@@ -146,8 +146,8 @@ class Agent:
 
     # --- сессии ---
 
-    def save(self, path: str | Path) -> Path:
-        """Сохраняет сессию (история + настройки + промпт) в jsonl."""
+    def export(self, path: str | Path) -> Path:
+        """Экспортирует сессию (история + настройки + промпт) в jsonl-файл."""
         return save_session(
             path,
             settings=self.settings,
@@ -155,11 +155,6 @@ class Agent:
             name=self.name,
             history=self.memory.history,
         )
-
-    def load(self, path: str | Path) -> None:
-        """Загружает сессию из файла в этого агента."""
-        data: SessionData = load_session(path)
-        self.apply_session(data)
 
     def apply_session(self, data: SessionData) -> None:
         if data.name:

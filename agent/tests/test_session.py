@@ -1,18 +1,21 @@
-"""Session save/load (jsonl): roundtrip настроек, истории, промпта, имени."""
+"""Сессионная память: jsonl-экспорт/загрузка + InMemorySession."""
+
+from pathlib import Path
 
 import pytest
 
-from my_agent.config.schema import AgentSettings, validate_config
+from my_agent.config.schema import AgentSettings, Config, validate_config
 from my_agent.core.agent import Agent
 from my_agent.core.message import Message, Role
 from my_agent.memory.session import (
     InMemorySession,
     SessionError,
     load_session,
+    save_session,
 )
 
 
-def make_config() -> object:
+def make_config() -> Config:
     return validate_config(
         {
             "providers": {
@@ -28,12 +31,12 @@ def make_agent(name: str = "chat-1") -> Agent:
         name=name,
         settings=AgentSettings.from_config(make_config()),
         system_prompt="SP-TEST",
-        llm=None,  # type: ignore[arg-type]  # save/load не ходят в LLM
-        config=make_config(),  # type: ignore[arg-type]
+        llm=None,  # type: ignore[arg-type]  # export не ходит в LLM
+        config=make_config(),
     )
 
 
-def test_save_load_roundtrip(tmp_path) -> None:
+def test_export_load_roundtrip(tmp_path: Path) -> None:
     agent = make_agent("my-chat")
     agent.memory.add(Message(role=Role.USER, content="привет"))
     agent.memory.add(Message(role=Role.ASSISTANT, content="здравствуйте"))
@@ -41,33 +44,42 @@ def test_save_load_roundtrip(tmp_path) -> None:
     agent.settings.temperature = 0.3
     agent.settings.stop = ["END"]
 
-    path = tmp_path / "sess.jsonl"
-    agent.save(path)
+    path = agent.export(tmp_path / "sess.jsonl")
 
-    other = make_agent("other")
-    other.load(path)
-    assert other.name == "my-chat"
-    assert other.settings.model == "p1:m9"
-    assert other.settings.temperature == 0.3
-    assert other.settings.stop == ["END"]
-    assert other.system_prompt == "SP-TEST"
-    assert [m.content for m in other.memory.history] == ["привет", "здравствуйте"]
-    assert [m.role for m in other.memory.history] == [Role.USER, Role.ASSISTANT]
+    data = load_session(path)
+    assert data.name == "my-chat"
+    assert data.settings.model == "p1:m9"
+    assert data.settings.temperature == 0.3
+    assert data.settings.stop == ["END"]
+    assert data.system_prompt == "SP-TEST"
+    assert [m.content for m in data.history] == ["привет", "здравствуйте"]
+    assert [m.role for m in data.history] == [Role.USER, Role.ASSISTANT]
 
 
-def test_save_creates_parent_dirs(tmp_path) -> None:
+def test_export_creates_parent_dirs(tmp_path: Path) -> None:
     agent = make_agent()
-    path = tmp_path / "nested" / "dir" / "sess.jsonl"
-    agent.save(path)
+    path = agent.export(tmp_path / "nested" / "dir" / "sess.jsonl")
     assert path.exists()
 
 
-def test_load_missing_file(tmp_path) -> None:
+def test_save_session_direct(tmp_path: Path) -> None:
+    path = save_session(
+        tmp_path / "direct.jsonl",
+        settings=AgentSettings.from_config(make_config()),
+        system_prompt="SP",
+        name="n",
+        history=[Message(role=Role.USER, content="x")],
+    )
+    assert path.exists()
+    assert load_session(path).name == "n"
+
+
+def test_load_missing_file(tmp_path: Path) -> None:
     with pytest.raises(SessionError, match="не найден"):
         load_session(tmp_path / "nope.jsonl")
 
 
-def test_load_corrupted_file(tmp_path) -> None:
+def test_load_corrupted_file(tmp_path: Path) -> None:
     path = tmp_path / "bad.jsonl"
     path.write_text('{"type": "meta"}', encoding="utf-8")
     with pytest.raises(SessionError):
