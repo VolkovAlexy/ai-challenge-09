@@ -14,7 +14,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
         "ollama": {
             "api_base": "http://localhost:11434/v1",
             "api_key": "",
-            "models": ["llama3.1", "qwen2.5-coder"],
+            "models": {"llama3.1": 131072, "qwen2.5-coder": 32768},
         },
     },
     "default_model": "ollama:qwen2.5-coder",
@@ -22,6 +22,8 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "top_p": 1.0,
     "max_tokens": 4096,
     "stop": [],
+    "context_window_default": 32768,
+    "compaction_threshold": 0.85,
 }
 
 

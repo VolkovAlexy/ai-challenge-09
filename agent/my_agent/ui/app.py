@@ -336,6 +336,8 @@ class AgentApp(App[None]):
                     "⚠ Контекст переполнен: провайдер обработал меньше токенов, чем "
                     "отправлено, — часть истории модель не видела.",
                 )
+            if tab.agent.compaction_note:
+                tab.add_note("system", tab.agent.compaction_note)
         self._persist_tab(tab)  # завершённый ход фиксируем сразу (не дожидаясь тика)
 
     # --- таймер: батч-перерисовка и метки вкладок ---
@@ -383,6 +385,7 @@ class AgentApp(App[None]):
             settings.max_tokens,
             tuple(settings.stop),
             agent.system_prompt,
+            agent.memory.summary,
         )
 
     def _persist_tab(self, tab: ChatTab) -> None:
@@ -396,6 +399,7 @@ class AgentApp(App[None]):
             agent.settings,
             agent.system_prompt,
             agent.memory.history,
+            summary=agent.memory.summary,
         )
         tab._fingerprint = self._tab_fingerprint(tab)
 

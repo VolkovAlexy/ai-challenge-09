@@ -8,12 +8,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from my_agent.config.schema import AgentSettings, Config
-from my_agent.core.context import ContextBuilder
+from my_agent.config.schema import AgentSettings, Config, Provider
+from my_agent.core.compactor import CompactionResult, ContextCompactor
+from my_agent.core.context import ContextBuilder, estimate_messages, estimate_text
 from my_agent.core.message import (
     ChatChunk,
     ChatRequest,
@@ -28,8 +28,6 @@ from my_agent.memory.session import InMemorySession, SessionData, save_session
 from my_agent.tools.registry import ToolRegistry
 
 CANCELLED_MARK = "… (запрос отменён)"
-
-CHARS_PER_TOKEN = 4  # грубая оценка для фолбэка, когда API не вернул usage
 
 # серверный prompt_tokens ниже этой доли локальной оценки отправленного промпта —
 # считаем, что провайдер обрезал контекст (модель не видела часть истории)
@@ -49,6 +47,25 @@ class TokenUsage:
     completion_tokens: int = 0  # ответ модели
     estimated: bool = False
     truncated: bool = False
+
+
+@dataclass
+class SessionTotals:
+    """Накопительный расход токенов за сессию (рантайм, в сессии не сохраняется).
+
+    in — Σ prompt_tokens всех запросов (каждый запрос переотправляет контекст
+    целиком — это честный расход); out — Σ completion_tokens ответов.
+    Учитываются и LLM-вызовы сжатия контекста. `estimated` — хоть одна
+    составляющая получена локальной оценкой (chars/4), а не от API.
+    """
+
+    in_tokens: int = 0
+    out_tokens: int = 0
+    estimated: bool = False
+
+    @property
+    def total_tokens(self) -> int:
+        return self.in_tokens + self.out_tokens
 
 
 class AgentBusyError(Exception):
@@ -77,11 +94,18 @@ class Agent:
         self._task: asyncio.Task[str] | None = None
         self._stream_text = ""
         self._stream_tcs: dict[int, ToolCall] = {}
+        # --- сжатие контекста ---
+        self._compactor = ContextCompactor(llm)
+        self._needs_compaction = False  # прошлый ход обрезан сервером — сжать принудительно
+        # заметка о последнем сжатии (UI выводит после завершения хода)
+        self.compaction_note: str | None = None
         # --- токены (только рантайм, в сессии не сохраняются) ---
         self.last_usage: TokenUsage | None = None
         # индекс assistant-сообщения в истории → токены его хода
         self.message_usage: dict[int, TokenUsage] = {}
         self._server_usage: Usage | None = None
+        # накопительный расход за сессию (in/out/Σ), включая вызовы компакции
+        self.totals = SessionTotals()
 
     # --- состояние стриминга (читает UI) ---
 
@@ -106,7 +130,7 @@ class Agent:
     @property
     def streaming_out_estimate(self) -> int:
         """Живая оценка токенов текущего ответа во время стрима (chars/4)."""
-        return self._estimate_text(self._stream_text)
+        return estimate_text(self._stream_text)
 
     @property
     def has_first_response(self) -> bool:
@@ -120,13 +144,26 @@ class Agent:
         )
 
     @property
-    def context_now(self) -> tuple[int, bool]:
-        """Текущий вес контекста: system + вся история прямо сейчас.
+    def context_window(self) -> int:
+        """Размер контекстного окна текущей модели (из config, с дефолтом)."""
+        try:
+            return self._config.context_window_for(self.settings.model)
+        except ValueError:
+            return self._config.context_window_default
 
-        Возвращает (токены, estimated). После хода = prompt + completion
-        последнего запроса (то, что уйдёт при следующем сообщении, минус
-        токены самого нового сообщения). Во время стрима ответ добавляется
-        живой оценкой. Без единого хода — оценка по текущим messages.
+    @property
+    def compaction_threshold(self) -> float:
+        """Доля заполнения окна, при которой сжимается история (из config)."""
+        return self._config.compaction_threshold
+
+    @property
+    def context_now(self) -> tuple[int, bool]:
+        """Текущий вес контекста: то, что уйдёт в LLM со следующим промптом.
+
+        system + саммари + несжатая история (+ новый пользовательский текст
+        в момент отправки). После хода = prompt + completion последнего
+        запроса; во время стрима ответ добавляется живой оценкой; без
+        единого хода — оценка проекции.
         """
         if self.last_usage is not None:
             if self.is_streaming:
@@ -135,8 +172,26 @@ class Agent:
                 self.last_usage.prompt_tokens + self.last_usage.completion_tokens,
                 self.last_usage.estimated,
             )
-        messages = self.context_builder.build_messages(self.system_prompt, self.memory.history)
-        return self._estimate_messages(messages), True
+        return estimate_messages(self._projection()), True
+
+    def _projection(self) -> list[Message]:
+        """Сообщения для LLM: system → саммари сжатого префикса → несжатый хвост.
+
+        История агента хранится целиком (чат не меняется), в запрос уходит
+        только проекция через ContextBuilder.
+        """
+        return self.context_builder.build_messages(
+            self.system_prompt,
+            self.memory.tail,
+            summary=self.memory.summary,
+        )
+
+    @property
+    def context_share(self) -> float | None:
+        """Заполнение окна (0.0–1.0) или None, если контекст неизвестен."""
+        if not self.has_first_response:
+            return None
+        return self.context_now[0] / self.context_window
 
     @property
     def settings_dirty(self) -> bool:
@@ -165,7 +220,12 @@ class Agent:
         LLMError пробрасывается (UI показывает в чате, чат продолжается).
         При отмене: частичный ответ сохраняется в истории, CancelledError — дальше.
         Токены хода: точные от API (usage в финальном чанке) либо оценка chars/4.
+        Перед запросом: если контекст заполнил долю окна (compaction_threshold)
+        либо прошлый ход был обрезан сервером — старейший префикс истории
+        сжимается в саммари (чат при этом не меняется, меняется только
+        проекция для LLM; заметка — в self.compaction_note).
         """
+        self.compaction_note = None
         self.memory.add(Message(role=Role.USER, content=text))
         self._stream_text = ""
         self._stream_tcs = {}
@@ -174,11 +234,10 @@ class Agent:
         messages: list[Message] = []
         try:
             provider, model = self._config.resolve_model(self.settings.model)
-            messages = self.context_builder.build_messages(self.system_prompt, self.memory.history)
+            await self._maybe_compact(provider, model)
+            messages = self._projection()
             # живая оценка контекста — видна в статус-баре ещё до ответа API
-            self.last_usage = TokenUsage(
-                prompt_tokens=self._estimate_messages(messages), estimated=True
-            )
+            self.last_usage = TokenUsage(prompt_tokens=estimate_messages(messages), estimated=True)
             request = ChatRequest(
                 model=model,
                 messages=messages,
@@ -217,35 +276,73 @@ class Agent:
             self._stream_tcs = {}
 
     def _finalize_usage(self, messages: list[Message], *, assistant_added: bool) -> None:
-        """Фиксирует токены завершившегося хода и привязывает их к ответу ассистента."""
+        """Фиксирует токены завершившегося хода и привязывает их к ответу ассистента.
+
+        Здесь же ход попадает в накопительные счётчики сессии (in/out/Σ);
+        неудавшийся ход (LLMError до финализации) сюда не доходит и не учитывается.
+        """
         if self._server_usage is not None:
-            sent_estimate = self._estimate_messages(messages)
+            sent_estimate = estimate_messages(messages)
+            truncated = self._server_usage.prompt_tokens < sent_estimate * TRUNCATION_RATIO
             self.last_usage = TokenUsage(
                 prompt_tokens=self._server_usage.prompt_tokens,
                 completion_tokens=self._server_usage.completion_tokens,
                 estimated=False,
-                truncated=self._server_usage.prompt_tokens < sent_estimate * TRUNCATION_RATIO,
+                truncated=truncated,
             )
+            if truncated:
+                self._needs_compaction = True  # сжать при следующем ходе
         else:
             self.last_usage = TokenUsage(
-                prompt_tokens=self._estimate_messages(messages),
-                completion_tokens=self._estimate_text(self._stream_text),
+                prompt_tokens=estimate_messages(messages),
+                completion_tokens=estimate_text(self._stream_text),
                 estimated=True,
             )
+        self.totals.in_tokens += self.last_usage.prompt_tokens
+        self.totals.out_tokens += self.last_usage.completion_tokens
+        if self.last_usage.estimated:
+            self.totals.estimated = True
         if assistant_added:
             self.message_usage[len(self.memory.history) - 1] = self.last_usage
 
-    @staticmethod
-    def _estimate_text(text: str) -> int:
-        """Грубая оценка: ~4 символа на токен."""
-        return len(text) // CHARS_PER_TOKEN
+    async def _maybe_compact(self, provider: Provider, model: str) -> None:
+        """Сжимает префикс истории в саммари, если контекст переполнен.
 
-    @classmethod
-    def _estimate_messages(cls, messages: list[Message]) -> int:
-        """Оценка контекста запроса по сериализованным сообщениям."""
-        return sum(
-            len(json.dumps(m.to_api(), ensure_ascii=False)) // CHARS_PER_TOKEN
-            for m in messages
+        Триггеры: заполнение доли окна (compaction_threshold) по локальной
+        оценке либо обрезка контекста сервером на прошлом ходу. Чат не
+        меняется: сообщения остаются в истории, для LLM сжатый префикс
+        заменяется саммари. Пользователь видит это по заметке compaction_note
+        (UI выводит после хода).
+        """
+        window = self.context_window
+        threshold = self._config.compaction_threshold
+        projected = estimate_messages(self._projection())
+        share = projected / window if window > 0 else 1.0
+        if share < threshold and not self._needs_compaction:
+            return
+        result: CompactionResult | None = await self._compactor.compact(
+            model=model,
+            api_base=provider.api_base,
+            api_key=provider.api_key,
+            previous_summary=self.memory.summary or "",
+            history=self.memory.tail,
+            window=window,
+            system_prompt=self.system_prompt,
+        )
+        if result is None:
+            self._needs_compaction = False
+            return
+        self.memory.compact_prefix(result.removed, summary=result.summary)
+        # расход LLM-вызова суммаризации — тоже траты сессии
+        self.totals.in_tokens += result.in_tokens
+        self.totals.out_tokens += result.out_tokens
+        if result.estimated:
+            self.totals.estimated = True
+        self.last_usage = None  # прошлый замер больше не соответствует проекции
+        self._needs_compaction = False
+        self.compaction_note = (
+            f"Контекст заполнен на {share:.0%}: {result.removed} сообщ. → саммари "
+            f"({estimate_text(result.summary)} ток.)"
         )
 
     def _accumulate_tool_calls(self, chunk: ChatChunk) -> None:
@@ -265,12 +362,14 @@ class Agent:
     # --- сессии ---
 
     def export(self, path: str | Path) -> Path:
-        """Экспортирует сессию (история + настройки + промпт) в jsonl-файл."""
+        """Экспортирует сессию (полная история + саммари + настройки) в jsonl-файл."""
         return save_session(
             path,
             settings=self.settings,
             system_prompt=self.system_prompt,
             name=self.name,
+            summary=self.memory.summary,
+            compacted_upto=self.memory.compacted_upto,
             history=self.memory.history,
         )
 
@@ -279,11 +378,18 @@ class Agent:
             self.name = data.name
         self.settings = data.settings
         self.system_prompt = data.system_prompt
-        self.memory.clear()
+        self.memory.clear(summary=data.summary, compacted_upto=data.compacted_upto)
         for message in data.history:
             self.memory.add(message)
         self.last_usage = None
         self.message_usage = {}
+        self.reset_totals()
+        self._needs_compaction = False
+        self.compaction_note = None
+
+    def reset_totals(self) -> None:
+        """Обнуляет накопительные счётчики токенов сессии (in/out/Σ)."""
+        self.totals = SessionTotals()
 
     # --- настройка через команды (runtime-override) ---
 

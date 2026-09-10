@@ -1,7 +1,8 @@
 """MessageList: история диалога + текущий стриминг + заметки команд.
 
-Под репликами ассистента — строка «tokens: N» (usage хода, runtime-данные
-агента). Пока стрим не начал выводить контент — лоадер «думаю…» (спиннер).
+Под репликами ассистента — строка «tokens: in N · out M» (usage хода,
+runtime-данные агента). Пока стрим не начал выводить контент — лоадер
+«думаю…» (спиннер).
 
 Рендерится из состояния ChatTab/Agent (plain Python); перерисовка
 управляется таймером App (~100 мс), а не каждым токеном.
@@ -35,10 +36,20 @@ _ROLE_TITLES = {"user": "вы", "assistant": "ассистент", "system": "с
 _ROLE_COLORS = {"user": "cyan", "assistant": "green"}
 
 
-def _tokens_line(usage_completion: int, estimated: bool) -> Text:
-    """Dim-строка «tokens: 456» под репликой ассистента (~ при локальной оценке)."""
+def _tokens_line(in_tokens: int, out_tokens: int, estimated: bool) -> Text:
+    """Dim-строка «tokens: in 120 · out 50» под репликой ассистента (~ при оценке).
+
+    in — полный промпт хода (system + история: каждый запрос переотправляет
+    контекст целиком), out — ответ модели. Во время стрима in ещё неизвестен
+    (in_tokens == 0) — печатается только out.
+    """
     mark = "~" if estimated else ""
-    return Text(f"  tokens: {mark}{fmt_tokens(usage_completion)}", style="dim")
+    if in_tokens > 0:
+        return Text(
+            f"  tokens: in {mark}{fmt_tokens(in_tokens)} · out {mark}{fmt_tokens(out_tokens)}",
+            style="dim",
+        )
+    return Text(f"  tokens: out {mark}{fmt_tokens(out_tokens)}", style="dim")
 
 
 class MessageList(ScrollView):
@@ -122,7 +133,7 @@ class MessageList(ScrollView):
                 body = Text("(пусто)", style="dim")
             blocks.append(Panel(body, title=title, border_style=color))
             if message.role == Role.ASSISTANT and (u := agent.message_usage.get(index)) is not None:
-                blocks.append(_tokens_line(u.completion_tokens, u.estimated))
+                blocks.append(_tokens_line(u.prompt_tokens, u.completion_tokens, u.estimated))
 
         if agent.is_streaming:
             title = _ROLE_TITLES["assistant"]
@@ -144,7 +155,7 @@ class MessageList(ScrollView):
                 blocks.append(
                     Panel(Text(stream + "▌" + extra), title=f"{title} …", border_style=color)
                 )
-                blocks.append(_tokens_line(agent.streaming_out_estimate, estimated=True))
+                blocks.append(_tokens_line(0, agent.streaming_out_estimate, estimated=True))
 
         for kind, text in tab.notes:
             style = "red" if kind == "error" else "yellow" if kind == "warning" else "dim"

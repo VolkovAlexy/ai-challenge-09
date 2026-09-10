@@ -265,6 +265,7 @@ def default_registry() -> CommandRegistry:
         if agent is None:
             return "Нет активного агента."
         agent.memory.clear()
+        agent.reset_totals()  # счётчики in/out/Σ описывают текущий диалог
         return "История очищена."
 
     def _export(ctx: CommandContext) -> str | None:

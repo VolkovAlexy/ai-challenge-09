@@ -13,7 +13,26 @@ class Provider(BaseModel):
 
     api_base: str = Field(description="Базовый URL, клиент сам дописывает /chat/completions")
     api_key: str = Field(default="", description="Может быть пустым (например, для ollama)")
-    models: list[str] = Field(default_factory=list, description="Список доступных моделей")
+    models: dict[str, int | None] = Field(
+        default_factory=dict,
+        description="Модель → размер контекстного окна в токенах (None — окно неизвестно)",
+    )
+
+    @field_validator("models", mode="before")
+    @classmethod
+    def _normalize_models(cls, v: Any) -> Any:
+        """Старый формат (список имён) → dict без известных окон (обратная совместимость)."""
+        if isinstance(v, list):
+            return {str(name): None for name in v}
+        return v
+
+    @field_validator("models")
+    @classmethod
+    def _windows_positive(cls, v: dict[str, int | None]) -> dict[str, int | None]:
+        for name, window in v.items():
+            if window is not None and window <= 0:
+                raise ValueError(f"размер контекста модели '{name}' должен быть > 0")
+        return v
 
     @field_validator("api_base")
     @classmethod
@@ -33,6 +52,15 @@ class Config(BaseModel):
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     max_tokens: int = Field(default=4096, gt=0)
     stop: list[str] = Field(default_factory=list)
+    context_window_default: int = Field(
+        default=32768, gt=0, description="Окно по умолчанию, если у модели не указан размер"
+    )
+    compaction_threshold: float = Field(
+        default=0.85,
+        ge=0.5,
+        le=1.0,
+        description="Доля заполнения окна, при которой история сжимается в саммари",
+    )
 
     @model_validator(mode="after")
     def _default_model_exists(self) -> Config:
@@ -78,6 +106,12 @@ class Config(BaseModel):
                 f"(доступны: {', '.join(known.models)})"
             )
         return known, model
+
+    def context_window_for(self, model_id: str) -> int:
+        """Окно модели: из config → context_window_default (ValueError, если модель неизвестна)."""
+        _, model = self.resolve_model(model_id)
+        window = self.providers[model_id.partition(":")[0]].models.get(model)
+        return window if window is not None else self.context_window_default
 
 
 def _format_error(error: ErrorDetails) -> str:

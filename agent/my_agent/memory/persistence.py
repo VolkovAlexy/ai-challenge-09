@@ -1,14 +1,15 @@
 """Хранение сессий в SQLite: автосохранение без риска потери при закрытии/сбое.
 
 `SessionStore` — один файл (по умолчанию `sessions/sessions.db`). Две таблицы:
-`sessions` (имя, системный промпт, настройки) и `messages` (история по seq).
-Настройки и сообщения хранятся как JSON (pydantic `model_dump_json`), чтобы
-схемы оставались forward-compatible. `snapshot` — атомарный upsert в одной
-транзакции (полная замена истории), поэтому torn-write невозможен.
+`sessions` (имя, системный промпт, саммари, его длина, настройки) и `messages`
+(история по seq). Настройки и сообщения хранятся как JSON (pydantic `model_dump_json`),
+чтобы схемы оставались forward-compatible. `snapshot` — атомарный upsert в
+одной транзакции (полная замена истории), поэтому torn-write невозможен.
 """
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions (updated_at);
 """
+
+# миграции со старых схем (IF NOT EXISTS/добавление колонок — idempotent)
+_MIGRATIONS = [
+    "ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN compacted_upto INTEGER NOT NULL DEFAULT 0",
+]
 
 
 @dataclass
@@ -70,6 +77,9 @@ class SessionStore:
         self._conn = sqlite3.connect(self._path)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
+        for statement in _MIGRATIONS:
+            with contextlib.suppress(sqlite3.OperationalError):
+                self._conn.execute(statement)  # колонка уже есть — миграция не нужна
         self._conn.commit()
 
     @staticmethod
@@ -83,6 +93,8 @@ class SessionStore:
         settings: AgentSettings,
         system_prompt: str,
         history: list[Message],
+        summary: str | None = None,
+        compacted_upto: int = 0,
     ) -> None:
         """Атомарный upsert-снапшот: метаданные + полная замена истории."""
         now = _now()
@@ -92,15 +104,27 @@ class SessionStore:
             self._conn.execute(
                 """
                 INSERT INTO sessions
-                    (id, name, system_prompt, settings_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (id, name, system_prompt, settings_json, summary, compacted_upto,
+                     created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO UPDATE SET
                     name = excluded.name,
                     system_prompt = excluded.system_prompt,
                     settings_json = excluded.settings_json,
+                    summary = excluded.summary,
+                    compacted_upto = excluded.compacted_upto,
                     updated_at = excluded.updated_at
                 """,
-                (session_id, name, system_prompt, settings_json, now, now),
+                (
+                    session_id,
+                    name,
+                    system_prompt,
+                    settings_json,
+                    summary or "",
+                    compacted_upto,
+                    now,
+                    now,
+                ),
             )
             self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             self._conn.executemany(
@@ -140,7 +164,10 @@ class SessionStore:
     def get(self, session_id: str) -> SessionData | None:
         """Полное состояние сессии; None, если её нет."""
         row = self._conn.execute(
-            "SELECT name, system_prompt, settings_json FROM sessions WHERE id = ?",
+            """
+            SELECT name, system_prompt, settings_json, summary, compacted_upto
+            FROM sessions WHERE id = ?
+            """,
             (session_id,),
         ).fetchone()
         if row is None:
@@ -151,7 +178,14 @@ class SessionStore:
             (session_id,),
         ).fetchall()
         history = [Message.model_validate_json(r[0]) for r in message_rows]
-        return SessionData(settings=settings, system_prompt=row[1], name=row[0], history=history)
+        return SessionData(
+            settings=settings,
+            system_prompt=row[1],
+            name=row[0],
+            summary=row[3] or None,
+            compacted_upto=int(row[4] or 0),
+            history=history,
+        )
 
     def delete(self, session_id: str) -> bool:
         """Удаляет сессию и её сообщения (CASCADE). True, если что-то удалено."""
@@ -169,6 +203,8 @@ class SessionStore:
             settings=data.settings,
             system_prompt=data.system_prompt,
             name=data.name,
+            summary=data.summary,
+            compacted_upto=data.compacted_upto,
             history=data.history,
         )
 

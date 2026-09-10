@@ -16,7 +16,7 @@ from my_agent.llm.client import LLMClient, LLMError
 from my_agent.memory.session import SessionData
 from my_agent.ui.app import ChatTab
 from my_agent.ui.widgets.message_list import MessageList
-from my_agent.ui.widgets.status_bar import StatusBar, context_part, fmt_tokens
+from my_agent.ui.widgets.status_bar import StatusBar, context_part, fmt_tokens, totals_part
 
 
 class MockLLM:
@@ -259,6 +259,116 @@ def test_message_usage_per_turn() -> None:
     assert agent.message_usage[3].prompt_tokens >= agent.message_usage[1].prompt_tokens
 
 
+# --- накопительные счётчики сессии (in/out/Σ) ---
+
+
+def test_totals_fresh_agent_is_zero() -> None:
+    agent, _ = make_agent([])
+    assert agent.totals.in_tokens == 0
+    assert agent.totals.out_tokens == 0
+    assert agent.totals.total_tokens == 0
+    assert agent.totals.estimated is False
+
+
+def test_totals_accumulate_over_turns() -> None:
+    """in = Σ prompt_tokens всех запросов (контекст переотправляется целиком)."""
+    chunks = [
+        ChatChunk(content="ok"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("one"))
+    asyncio.run(agent.ask("two"))
+    assert agent.totals.in_tokens == 200
+    assert agent.totals.out_tokens == 100
+    assert agent.totals.total_tokens == 300
+    assert agent.totals.estimated is False
+
+
+def test_totals_marked_estimated_without_server_usage() -> None:
+    agent, _ = make_agent([ChatChunk(content="Привет мир")])
+    asyncio.run(agent.ask("hi"))
+    assert agent.last_usage is not None
+    assert agent.totals.estimated is True
+    assert agent.totals.in_tokens == agent.last_usage.prompt_tokens
+    assert agent.totals.out_tokens == len("Привет мир") // 4
+
+
+def test_failed_turn_not_counted_in_totals() -> None:
+    class FailingLLM:
+        async def astream(self, request: object, api_base: str, api_key: str):
+            raise LLMError("HTTP 401: invalid api key", status=401)
+            yield
+
+        async def close(self) -> None:
+            return None
+
+    chunks = [
+        ChatChunk(content="ok"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        ),
+    ]
+    agent, good_llm = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    assert agent.totals.total_tokens == 150
+    agent._llm = FailingLLM()  # type: ignore[assignment]
+    with pytest.raises(LLMError, match="401"):
+        asyncio.run(agent.ask("again"))
+    assert agent.totals.total_tokens == 150  # неудавшийся ход не посчитан
+    del good_llm
+
+
+def test_cancel_counts_partial_in_totals() -> None:
+    chunks = [ChatChunk(content="частичный ответ"), ChatChunk(content="x")]
+    agent, _ = make_agent(chunks, delay=0.05)
+
+    async def scenario() -> None:
+        task = agent.start_ask("hi")
+        await asyncio.sleep(0.1)  # первый чанк (0.05) уже доставлен
+        assert agent.cancel_ask() is True
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert agent.totals.estimated is True
+    assert agent.totals.out_tokens == len("частичный ответ") // 4
+    assert agent.last_usage is not None
+    assert agent.totals.in_tokens == agent.last_usage.prompt_tokens
+
+
+def test_apply_session_resets_totals() -> None:
+    chunks = [
+        ChatChunk(content="ok"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    assert agent.totals.total_tokens == 150
+    data = SessionData(settings=agent.settings, system_prompt="SP", name="test")
+    agent.apply_session(data)
+    assert agent.totals.total_tokens == 0
+    assert agent.totals.estimated is False
+
+
+def test_reset_totals() -> None:
+    chunks = [
+        ChatChunk(content="ok"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    agent.reset_totals()
+    assert agent.totals.total_tokens == 0
+    assert agent.totals.estimated is False
+
+
 # --- детект обрезки контекста (server usage << отправленный промпт) ---
 
 
@@ -442,6 +552,42 @@ def test_context_now_estimate_after_apply_session() -> None:
     assert tokens > 8  # system + загруженная история
 
 
+# --- totals_part (StatusBar): накопительный расход сессии ---
+
+
+def test_totals_part_zero_on_fresh_agent() -> None:
+    agent, _ = make_agent([])
+    assert totals_part(agent).plain == "in 0  out 0  Σ 0"
+
+
+def test_totals_part_shows_accumulated() -> None:
+    chunks = [
+        ChatChunk(content="ok"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {"usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("one"))
+    asyncio.run(agent.ask("two"))
+    assert totals_part(agent).plain == "in 200  out 100  Σ 300"
+
+
+def test_totals_part_tilde_when_estimated() -> None:
+    agent, _ = make_agent([ChatChunk(content="Привет мир")])
+    asyncio.run(agent.ask("hi"))
+    part = totals_part(agent)
+    assert part.plain.startswith("in ~")
+    assert f"out ~{len('Привет мир') // 4}" in part.plain
+    assert "Σ ~" in part.plain
+
+
+def test_status_bar_includes_totals() -> None:
+    agent, _ = make_agent([])
+    rendered = StatusBar(ChatTab(agent=agent)).render()
+    assert "Σ 0" in rendered.plain
+
+
 # --- context_part (StatusBar) ---
 
 
@@ -475,8 +621,8 @@ async def test_context_part_appears_with_first_response() -> None:
     assert part is not None
     assert part.plain.startswith("context ~")
     await task
-    # точные числа от API: 30 + 8
-    assert context_part(agent).plain == "context 38"
+    # точные числа от API: 30 + 8; окно 32768 (дефолт)
+    assert context_part(agent).plain == "context 38/32.8k (0%)"
 
 
 def test_context_part_exact_after_server_usage() -> None:
@@ -488,7 +634,7 @@ def test_context_part_exact_after_server_usage() -> None:
     ]
     agent, _ = make_agent(chunks)
     asyncio.run(agent.ask("hi"))
-    assert context_part(agent).plain == "context 2594"
+    assert context_part(agent).plain == "context 2594/32.8k (8%)"
 
 
 def test_context_part_warns_when_truncated() -> None:
@@ -511,7 +657,7 @@ def test_context_part_estimated_mark() -> None:
     agent, _ = make_agent([ChatChunk(content="Привет мир")])
     asyncio.run(agent.ask("hi"))
     # оценка: system+user = 16, ответ "Привет мир" = 2 → 18
-    assert context_part(agent).plain == "context ~18"
+    assert context_part(agent).plain == "context ~18/32.8k (0%)"
 
 
 # --- MessageList: tokens под репликами + лоадер ---
@@ -529,7 +675,7 @@ def test_tokens_line_under_assistant_message() -> None:
     rendered = MessageList(ChatTab(agent=agent)).render()
     assert isinstance(rendered, Group)
     texts = [b for b in rendered.renderables if isinstance(b, Text)]
-    assert any(t.plain.strip() == "tokens: 50" for t in texts)
+    assert any(t.plain.strip() == "tokens: in 100 · out 50" for t in texts)
 
 
 def test_warning_note_rendered_yellow() -> None:
@@ -547,10 +693,32 @@ def test_warning_note_rendered_yellow() -> None:
 def test_estimated_tokens_line_under_assistant_message() -> None:
     agent, _ = make_agent([ChatChunk(content="Привет мир")])
     asyncio.run(agent.ask("hi"))
+    assert agent.last_usage is not None
     rendered = MessageList(ChatTab(agent=agent)).render()
     assert isinstance(rendered, Group)
     texts = [b for b in rendered.renderables if isinstance(b, Text)]
-    assert any(t.plain.strip() == f"tokens: ~{len('Привет мир') // 4}" for t in texts)
+    expected = (
+        f"tokens: in ~{agent.last_usage.prompt_tokens}"
+        f" · out ~{len('Привет мир') // 4}"
+    )
+    assert any(t.plain.strip() == expected for t in texts)
+
+
+def test_streaming_tokens_line_shows_only_out() -> None:
+    """Во время стрима in ещё неизвестен — строка печатает только out."""
+    agent, _ = make_agent([ChatChunk(content="x" * 40), ChatChunk(content="y")], delay=0.05)
+
+    async def scenario() -> None:
+        task = agent.start_ask("hi")
+        await asyncio.sleep(0.07)  # первый чанк доставлен, стрим ещё идёт
+        rendered = MessageList(ChatTab(agent=agent)).render()
+        assert isinstance(rendered, Group)
+        texts = [b for b in rendered.renderables if isinstance(b, Text)]
+        expected = f"tokens: out ~{len('x' * 40) // 4}"
+        assert any(t.plain.strip() == expected for t in texts)
+        await task
+
+    asyncio.run(scenario())
 
 
 def test_thinking_loader_before_first_chunk() -> None:

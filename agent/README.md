@@ -25,20 +25,29 @@ uv run my-agent --model openai:gpt-4o-mini    # модель стартовог�
 ```json
 {
   "providers": {
-    "openai":  {"api_base": "https://api.openai.com/v1", "api_key": "sk-…", "models": ["gpt-4o-mini"]},
-    "ollama":  {"api_base": "http://localhost:11434/v1", "api_key": "", "models": ["llama3.1"]}
+    "openai":  {"api_base": "https://api.openai.com/v1", "api_key": "sk-…", "models": {"gpt-4o-mini": 128000}},
+    "ollama":  {"api_base": "http://localhost:11434/v1", "api_key": "", "models": {"llama3.1": 131072, "qwen2.5-coder": null}}
   },
   "default_model": "ollama:llama3.1",
   "temperature": 0.7,
   "top_p": 1.0,
   "max_tokens": 4096,
-  "stop": []
+  "stop": [],
+  "context_window_default": 32768,
+  "compaction_threshold": 0.85
 }
 ```
 
 Модель — `provider:model`; список моделей только из config. `api_key` может
-быть пустым (ollama). Файла нет — создаётся дефолтный; невалидный — понятные
-ошибки по полям.
+быть пустым (ollama). `models` — модель → размер контекстного окна в токенах
+(`null` — окно неизвестно, возьмётся `context_window_default`). Когда контекст
+заполняет `compaction_threshold` окна, начало беседы сжимается в саммари для
+LLM — чат при этом не меняется, вся история остаётся на экране и в сессии
+(заметка в чате, в статус-баре — `context N/окно (P%)`). В статус-баре —
+накопительный расход сессии: `in X out Y Σ Z` (in — промпты запросов, out —
+ответы, Σ — всего; `~` — есть оценки; обнуляются `/clear` и `/session`).
+Под репликами ассистента — `tokens: in … · out …`. Файла нет —
+создаётся дефолтный; невалидный — понятные ошибки по полям.
 
 ## Команды
 
