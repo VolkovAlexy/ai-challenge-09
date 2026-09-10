@@ -30,10 +30,18 @@ from my_agent.core.context import fmt_tokens
 from my_agent.core.message import Role
 
 if TYPE_CHECKING:
-    from my_agent.ui.app import ChatTab
+    from my_agent.ui.app import ChatTab, Note
 
 _ROLE_TITLES = {"user": "вы", "assistant": "ассистент", "system": "система", "tool": "tool"}
 _ROLE_COLORS = {"user": "cyan", "assistant": "green"}
+
+# Заметки (вывод команд, ошибки) — те же баблы, что и реплики: kind → (заголовок, обводка)
+_NOTE_STYLES = {
+    "error": ("ошибка", "red"),
+    "system": ("инфо", "orange1"),
+    "warning": ("внимание", "yellow"),
+    "compact": ("сжатие", "cyan"),
+}
 
 
 def _tokens_line(in_tokens: int, out_tokens: int, estimated: bool) -> Text:
@@ -50,6 +58,12 @@ def _tokens_line(in_tokens: int, out_tokens: int, estimated: bool) -> Text:
             style="dim",
         )
     return Text(f"  tokens: out {mark}{fmt_tokens(out_tokens)}", style="dim")
+
+
+def _note_panel(note: Note) -> Panel:
+    """Бабл заметки: тот же Panel, что у реплик, с обводкой по kind."""
+    title, border = _NOTE_STYLES.get(note.kind, ("инфо", "orange1"))
+    return Panel(Text(note.text), title=title, border_style=border)
 
 
 class MessageList(ScrollView):
@@ -120,8 +134,17 @@ class MessageList(ScrollView):
         if not history and not agent.is_streaming and not tab.notes:
             return Text("Начните диалог. /help — список команд.", style="dim")
 
+        # Заметки вшиваем в таймлайн чата: pos = «перед сообщением №pos».
+        # Clamp — история могла усохнуть (compact / загрузка сессии).
+        notes_at: dict[int, list[Note]] = {}
+        for note in tab.notes:
+            pos = min(note.anchor, len(history))
+            notes_at.setdefault(pos, []).append(note)
+
         blocks: list[RenderableType] = []
         for index, message in enumerate(history):
+            for note in notes_at.get(index, []):
+                blocks.append(_note_panel(note))
             title = _ROLE_TITLES.get(message.role.value, message.role.value)
             color = _ROLE_COLORS.get(message.role.value, "dim")
             if message.content:
@@ -159,17 +182,8 @@ class MessageList(ScrollView):
                 )
                 blocks.append(_tokens_line(0, agent.streaming_out_estimate, estimated=True))
 
-        for kind, text in tab.notes:
-            # compact — заметка о сжатии контекста (выделяется от прочих dim-строк)
-            style = (
-                "red"
-                if kind == "error"
-                else "yellow"
-                if kind == "warning"
-                else "cyan dim"
-                if kind == "compact"
-                else "dim"
-            )
-            blocks.append(Text(text, style=style))
+        # хвост: заметки, случившиеся после последнего сообщения (и при пустой истории)
+        for note in notes_at.get(len(history), []):
+            blocks.append(_note_panel(note))
 
         return Group(*blocks)

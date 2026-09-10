@@ -72,7 +72,7 @@ async def test_palette_filter_and_select() -> None:
         assert app.active_agent().settings.model == "beta:m3"
         tab = app.active_tab()
         assert tab is not None
-        assert ("system", "Модель: beta:m3") in tab.notes
+        assert tab.notes == []  # модель видна в статус-баре — заметка не добавляется
 
 
 async def test_palette_arrows_and_enter() -> None:

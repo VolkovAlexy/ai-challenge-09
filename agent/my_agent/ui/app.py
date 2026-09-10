@@ -38,6 +38,20 @@ CTRL_C_WINDOW = 3.0  # окно «повторный Ctrl+C — выход»
 
 
 @dataclass
+class Note:
+    """Заметка (вывод команд, ошибки) с позицией в таймлайне чата.
+
+    `anchor` — длина истории в момент добавления: заметка рендерится в
+    таймлайне после anchor-го сообщения, как обычный бабл чата, а не
+    прилипшим к низу хвостом.
+    """
+
+    kind: str
+    text: str
+    anchor: int
+
+
+@dataclass
 class ChatTab:
     """Состояние вкладки вне Textual-виджетов: агент + заметки (вывод команд/ошибки).
 
@@ -46,13 +60,13 @@ class ChatTab:
     """
 
     agent: Agent
-    notes: list[tuple[str, str]] = field(default_factory=list)
+    notes: list[Note] = field(default_factory=list)
     dirty: bool = True
     session_id: str | None = None
     _fingerprint: tuple[object, ...] = field(default_factory=tuple)
 
     def add_note(self, kind: str, text: str) -> None:
-        self.notes.append((kind, text))
+        self.notes.append(Note(kind=kind, text=text, anchor=len(self.agent.memory.history)))
         self.dirty = True
 
 
@@ -241,7 +255,7 @@ class AgentApp(App[None]):
         except ValueError as exc:
             tab.add_note("error", f"Ошибка: {exc}")
             return
-        tab.add_note("system", f"Модель: {model_id}")
+        tab.dirty = True  # модель и так видна в статус-баре — заметка не нужна
 
     def open_session_palette(self) -> None:
         current = self.active_tab()

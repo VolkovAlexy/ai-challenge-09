@@ -162,7 +162,7 @@ async def test_session_select_current_is_noop() -> None:
         assert active_agent(app).name == current_name
         tab = app.active_tab()
         assert tab is not None
-        assert ("system", "Эта сессия уже открыта у активного агента.") in tab.notes
+        assert any(n.text == "Эта сессия уже открыта у активного агента." for n in tab.notes)
 
 
 async def test_session_escape_cancels() -> None:

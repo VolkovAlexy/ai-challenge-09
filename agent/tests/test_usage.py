@@ -679,16 +679,58 @@ def test_tokens_line_under_assistant_message() -> None:
     assert any(t.plain.strip() == "tokens: in 100 · out 50" for t in texts)
 
 
-def test_warning_note_rendered_yellow() -> None:
-    """Заметки kind='warning' (переполнение контекста) видны и жёлтые."""
+def test_warning_note_rendered_yellow_bubble() -> None:
+    """Заметки kind='warning' (переполнение контекста) — баблы с жёлтой обводкой."""
     agent, _ = make_agent([ChatChunk(content="ok")])
     tab = ChatTab(agent=agent)
     tab.add_note("warning", "⚠ Контекст переполнен")
     rendered = MessageList(tab).render()
     assert isinstance(rendered, Group)
-    texts = [b for b in rendered.renderables if isinstance(b, Text)]
-    assert any("Контекст переполнен" in t.plain for t in texts)
-    assert any(t.style == "yellow" for t in texts)
+    panels = [b for b in rendered.renderables if isinstance(b, Panel)]
+    assert any(
+        "Контекст переполнен" in p.renderable.plain and p.border_style == "yellow"
+        and p.title == "внимание"
+        for p in panels
+    )
+
+
+def test_note_anchored_in_chat_timeline() -> None:
+    """Заметка остаётся в таймлайне чата: новые реплики появляются после неё."""
+    agent, _ = make_agent([ChatChunk(content="раз"), ChatChunk(content="два")])
+    tab = ChatTab(agent=agent)
+    asyncio.run(agent.ask("вопрос 1"))
+    tab.add_note("system", "заметка в середине")
+    asyncio.run(agent.ask("вопрос 2"))
+    rendered = MessageList(tab).render()
+    assert isinstance(rendered, Group)
+    order: list[str] = []
+    for block in rendered.renderables:
+        if isinstance(block, Panel) and block.title == "вы":
+            order.append("message")
+        elif isinstance(block, Panel) and block.title == "инфо":
+            order.append("note")
+    assert order == ["message", "note", "message"]
+
+
+def test_error_and_system_notes_rendered_as_bubbles() -> None:
+    """error — красная обводка, system — оранжевая; обе — баблы с заголовками."""
+    agent, _ = make_agent([ChatChunk(content="ok")])
+    tab = ChatTab(agent=agent)
+    tab.add_note("error", "Ошибка LLM: таймаут")
+    tab.add_note("system", "Команда /foo не найдена.")
+    rendered = MessageList(tab).render()
+    assert isinstance(rendered, Group)
+    panels = [b for b in rendered.renderables if isinstance(b, Panel)]
+    assert any(
+        "Ошибка LLM" in p.renderable.plain and p.border_style == "red"
+        and p.title == "ошибка"
+        for p in panels
+    )
+    assert any(
+        "не найдена" in p.renderable.plain and p.border_style == "orange1"
+        and p.title == "инфо"
+        for p in panels
+    )
 
 
 def test_estimated_tokens_line_under_assistant_message() -> None:

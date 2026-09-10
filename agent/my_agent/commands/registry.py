@@ -95,7 +95,7 @@ class CommandRegistry:
         command = self.get(name)
         ctx.args = args
         if command is None:
-            return f"Команда /{name} не найдена.\n\n{_command_list(self)}"
+            return f"Команда /{name} не найдена. /help — список команд."
         return command.handler(ctx)
 
     def complete(self, ctx: CommandContext, line: str) -> list[str]:
@@ -177,7 +177,7 @@ def default_registry() -> CommandRegistry:
             agent.set_model(model_id)
         except ValueError as exc:
             return f"Ошибка: {exc}\n\nМодели:\n" + "\n".join(f"  {m}" for m in _model_ids(ctx))
-        return f"Модель: {model_id}"
+        return None  # модель и так видна в статус-баре — заметка не нужна
 
     def _temperature(ctx: CommandContext) -> str | None:
         agent = _require_agent(ctx)
