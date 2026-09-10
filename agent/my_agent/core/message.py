@@ -69,6 +69,8 @@ class ChatRequest(BaseModel):
             "temperature": self.temperature,
             "top_p": self.top_p,
             "stream": self.stream,
+            # просим API вернуть usage в финальном чанке стрима
+            "stream_options": {"include_usage": True},
         }
         if self.max_tokens is not None:
             data["max_tokens"] = self.max_tokens
@@ -87,21 +89,47 @@ class ToolCallDelta(BaseModel):
     function_arguments: str | None = None
 
 
+class Usage(BaseModel):
+    """Потребление токенов, возвращаемое API (финальный чанк стрима)."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class ChatChunk(BaseModel):
-    """Один стриминговый дельте, нормализованный из SSE-события."""
+    """Один стриминговый дельте, нормализованный из SSE-события.
+
+    `error` — текст ошибки провайдера из SSE-события error (например,
+    переполнение контекста у LM Studio); клиент превращает его в LLMError.
+    """
 
     content: str | None = None
     tool_call_deltas: list[ToolCallDelta] = Field(default_factory=list)
     finish_reason: str | None = None
+    usage: Usage | None = None
+    error: str | None = None
 
     @classmethod
     def from_sse_data(cls, data: dict[str, Any]) -> ChatChunk | None:
-        """Разбирает JSON одного SSE-события; None — для маркера [DONE]."""
+        """Разбирает JSON одного SSE-события; None — для маркера [DONE].
+
+        Финальный чанк с usage приходит с пустым choices — не теряем его.
+        Ошибка провайдера ({"error": ...}) может прийти в HTTP 200 стримом.
+        """
         if not data:
             return None
         choices = data.get("choices") or []
+        usage_raw = data.get("usage")
+        usage = cls._parse_usage(usage_raw)
+        error = cls._parse_error(data.get("error"))
         if not choices:
-            return None
+            if usage is None and error is None:
+                return None
+            return cls(usage=usage, error=error)
         delta = choices[0].get("delta") or {}
         tool_calls: list[ToolCallDelta] = []
         for raw in delta.get("tool_calls") or []:
@@ -119,4 +147,25 @@ class ChatChunk(BaseModel):
             content=delta.get("content"),
             tool_call_deltas=tool_calls,
             finish_reason=choices[0].get("finish_reason"),
+            usage=usage,
+            error=error,
         )
+
+    @staticmethod
+    def _parse_usage(raw: Any) -> Usage | None:
+        if not isinstance(raw, dict):
+            return None
+        prompt = raw.get("prompt_tokens")
+        completion = raw.get("completion_tokens")
+        if not isinstance(prompt, int) or not isinstance(completion, int):
+            return None
+        return Usage(prompt_tokens=prompt, completion_tokens=completion)
+
+    @staticmethod
+    def _parse_error(raw: Any) -> str | None:
+        """Текст ошибки провайдера: {"error": {"message": ...}} или {"error": "..."}."""
+        if isinstance(raw, dict) and raw.get("message"):
+            return str(raw["message"])
+        if isinstance(raw, str) and raw:
+            return raw
+        return None

@@ -1,29 +1,88 @@
-"""ChatInput: строка ввода + tab-completion по командам и моделям.
+"""ChatInput: многострочное поле ввода + tab-completion по командам и моделям.
 
-Readline-стиль: один кандидат — подставляется, несколько — общий префикс,
-повторный Tab перебирает кандидатов по кругу.
+Enter — отправить, Shift+Enter — перенос строки, Tab — автодополнение
+(readline-стиль: один кандидат — подставляется, несколько — общий префикс,
+повторный Tab перебирает кандидатов по кругу). Вставка многострочного текста
+работает нативно. Высота растёт вместе с содержимым до MAX_INPUT_LINES.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from textual.binding import Binding
-from textual.widgets import Input
+from textual.message import Message
+from textual.widgets import TextArea
 
 if TYPE_CHECKING:
     from my_agent.ui.app import AgentApp, ChatTab
 
+MAX_INPUT_LINES = 8  # максимум видимых строк ввода (+2 на рамку)
 
-class ChatInput(Input):
-    BINDINGS = [Binding("tab", "complete", "Tab")]  # noqa: RUF012
+
+class ChatInput(TextArea):
+    BINDINGS = [  # noqa: RUF012
+        # priority=True — перехват до обработки клавиш самим TextArea.
+        Binding("enter", "submit", "Отправить", priority=True),
+        Binding("shift+enter", "newline", "Новая строка", priority=True),
+        Binding("tab", "complete", "Tab", priority=True),
+    ]
+
+    @dataclass
+    class Submitted(Message):
+        """Текст отправлен (Enter)."""
+
+        input: ChatInput
+        value: str
+
+        @property
+        def control(self) -> ChatInput:
+            """Псевдоним input (идиома Textual)."""
+            return self.input
 
     def __init__(self, tab: ChatTab) -> None:
-        super().__init__(placeholder="Сообщение или /команда…")
+        super().__init__(
+            placeholder="Сообщение или /команда…",
+            highlight_cursor_line=False,
+        )
         self.tab = tab
         self._candidates: list[str] = []
         self._index = 0
+        self.styles.height = 3  # одна строка + рамка
+
+    # --- совместимость с прежним API (Input.value) ---
+
+    @property
+    def value(self) -> str:
+        return self.text
+
+    @value.setter
+    def value(self, text: str) -> None:
+        self.text = text  # load_text ставит курсор в начало — возвращаем в конец
+        self.move_cursor(self.document.end)
+
+    # --- авто-высота по числу (завёрнутых) строк ---
+
+    def _update_height(self) -> None:
+        lines = min(self.wrapped_document.height, MAX_INPUT_LINES)
+        self.styles.height = lines + 2  # + рамка сверху/снизу
+
+    def _on_text_area_changed(self, event: TextArea.Changed) -> None:
+        self._update_height()
+
+    def _on_resize(self) -> None:
+        super()._on_resize()  # rewrap по новой ширине
+        self._update_height()
+
+    # --- действия ---
+
+    def action_submit(self) -> None:
+        self.post_message(self.Submitted(self, self.text))
+
+    def action_newline(self) -> None:
+        self.insert("\n")
 
     def _app(self) -> AgentApp | None:
         app = self.app

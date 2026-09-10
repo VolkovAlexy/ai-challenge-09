@@ -18,7 +18,7 @@ from textual.app import App
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widget import Widget
-from textual.widgets import Input, TabbedContent, TabPane
+from textual.widgets import TabbedContent, TabPane
 
 from my_agent.commands.registry import CommandContext, CommandRegistry, default_registry
 from my_agent.config.schema import AgentSettings, Config
@@ -75,11 +75,10 @@ class AgentView(Vertical):
         self.messages.refresh_follow()
         self.status.refresh()
 
-    def on_input_submitted(self, event: object) -> None:
-        if isinstance(event, Input.Submitted):
-            app = self.app
-            if isinstance(app, AgentApp) and app.handle_input(self.tab, event.value):
-                self.input.value = ""
+    def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+        app = self.app
+        if isinstance(app, AgentApp) and app.handle_input(self.tab, event.value):
+            event.input.clear()
 
 
 class AgentApp(App[None]):
@@ -329,6 +328,14 @@ class AgentApp(App[None]):
             tab.add_note("error", f"Ошибка LLM: {exc}")
         except Exception as exc:
             tab.add_note("error", f"Непредвиденная ошибка: {exc}")
+        else:
+            usage = tab.agent.last_usage
+            if usage is not None and usage.truncated:
+                tab.add_note(
+                    "warning",
+                    "⚠ Контекст переполнен: провайдер обработал меньше токенов, чем "
+                    "отправлено, — часть истории модель не видела.",
+                )
         self._persist_tab(tab)  # завершённый ход фиксируем сразу (не дожидаясь тика)
 
     # --- таймер: батч-перерисовка и метки вкладок ---

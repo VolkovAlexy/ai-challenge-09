@@ -76,6 +76,10 @@ class LLMClient:
                     async for event in event_source.aiter_sse():
                         chunk = self._parse_event(event.data)
                         if chunk is not None:
+                            if chunk.error:
+                                # ошибка провайдера внутри HTTP 200 (SSE event: error),
+                                # например переполнение контекста — без ретраев
+                                raise LLMError(chunk.error)
                             yield chunk
                 return
             except _RetryableHTTPError as exc:
@@ -88,6 +92,15 @@ class LLMClient:
                     raise LLMError(f"сетевая ошибка: {exc}") from exc
                 attempt += 1
                 await asyncio.sleep(RETRY_DELAYS[attempt - 1])
+            except LLMError as exc:
+                # строгий провайдер не принял stream_options — повтор один раз без него
+                if (
+                    exc.status == 400
+                    and "stream_options" in str(exc)
+                    and body.pop("stream_options", None) is not None
+                ):
+                    continue
+                raise
 
     @staticmethod
     def _error_detail(response: httpx.Response) -> str:

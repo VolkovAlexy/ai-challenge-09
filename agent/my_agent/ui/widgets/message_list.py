@@ -1,5 +1,8 @@
 """MessageList: история диалога + текущий стриминг + заметки команд.
 
+Под репликами ассистента — строка «tokens: N» (usage хода, runtime-данные
+агента). Пока стрим не начал выводить контент — лоадер «думаю…» (спиннер).
+
 Рендерится из состояния ChatTab/Agent (plain Python); перерисовка
 управляется таймером App (~100 мс), а не каждым токеном.
 
@@ -14,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Group, RenderableType
 from rich.panel import Panel
+from rich.spinner import Spinner
 from rich.text import Text
 from textual.events import Resize
 from textual.geometry import Size
@@ -21,11 +25,20 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.visual import Visual, visualize
 
+from my_agent.core.message import Role
+from my_agent.ui.widgets.status_bar import fmt_tokens
+
 if TYPE_CHECKING:
     from my_agent.ui.app import ChatTab
 
 _ROLE_TITLES = {"user": "вы", "assistant": "ассистент", "system": "система", "tool": "tool"}
 _ROLE_COLORS = {"user": "cyan", "assistant": "green"}
+
+
+def _tokens_line(usage_completion: int, estimated: bool) -> Text:
+    """Dim-строка «tokens: 456» под репликой ассистента (~ при локальной оценке)."""
+    mark = "~" if estimated else ""
+    return Text(f"  tokens: {mark}{fmt_tokens(usage_completion)}", style="dim")
 
 
 class MessageList(ScrollView):
@@ -97,7 +110,7 @@ class MessageList(ScrollView):
             return Text("Начните диалог. /help — список команд.", style="dim")
 
         blocks: list[RenderableType] = []
-        for message in history:
+        for index, message in enumerate(history):
             title = _ROLE_TITLES.get(message.role.value, message.role.value)
             color = _ROLE_COLORS.get(message.role.value, "dim")
             if message.content:
@@ -108,18 +121,33 @@ class MessageList(ScrollView):
             else:
                 body = Text("(пусто)", style="dim")
             blocks.append(Panel(body, title=title, border_style=color))
+            if message.role == Role.ASSISTANT and (u := agent.message_usage.get(index)) is not None:
+                blocks.append(_tokens_line(u.completion_tokens, u.estimated))
 
         if agent.is_streaming:
             title = _ROLE_TITLES["assistant"]
             color = _ROLE_COLORS["assistant"]
-            stream = agent.streaming_text or " "
-            tcs = agent.streaming_tool_calls
-            names = ", ".join(t.function.name or "?" for t in tcs)
-            extra = f"  [tool_calls: {names}]" if tcs else ""
-            blocks.append(Panel(Text(stream + "▌" + extra), title=f"{title} …", border_style=color))
+            if agent.is_thinking:
+                # до первого контента показываем лоадер вместо пустой панели
+                blocks.append(
+                    Panel(
+                        Spinner("dots", text=Text("думаю…", style="dim")),
+                        title=f"{title} …",
+                        border_style=color,
+                    )
+                )
+            else:
+                stream = agent.streaming_text or " "
+                tcs = agent.streaming_tool_calls
+                names = ", ".join(t.function.name or "?" for t in tcs)
+                extra = f"  [tool_calls: {names}]" if tcs else ""
+                blocks.append(
+                    Panel(Text(stream + "▌" + extra), title=f"{title} …", border_style=color)
+                )
+                blocks.append(_tokens_line(agent.streaming_out_estimate, estimated=True))
 
         for kind, text in tab.notes:
-            style = "red" if kind == "error" else "dim"
+            style = "red" if kind == "error" else "yellow" if kind == "warning" else "dim"
             blocks.append(Text(text, style=style))
 
         return Group(*blocks)
