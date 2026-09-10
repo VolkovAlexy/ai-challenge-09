@@ -10,13 +10,14 @@ from rich.text import Text
 
 from my_agent.config.schema import AgentSettings, validate_config
 from my_agent.core.agent import Agent
+from my_agent.core.context import fmt_tokens
 from my_agent.core.message import ChatChunk, ChatRequest, Message, Role
 from my_agent.llm import client as llm_client_module
 from my_agent.llm.client import LLMClient, LLMError
 from my_agent.memory.session import SessionData
 from my_agent.ui.app import ChatTab
 from my_agent.ui.widgets.message_list import MessageList
-from my_agent.ui.widgets.status_bar import StatusBar, context_part, fmt_tokens, totals_part
+from my_agent.ui.widgets.status_bar import StatusBar, context_part, totals_part
 
 
 class MockLLM:

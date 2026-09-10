@@ -26,8 +26,8 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.visual import Visual, visualize
 
+from my_agent.core.context import fmt_tokens
 from my_agent.core.message import Role
-from my_agent.ui.widgets.status_bar import fmt_tokens
 
 if TYPE_CHECKING:
     from my_agent.ui.app import ChatTab
@@ -140,9 +140,11 @@ class MessageList(ScrollView):
             color = _ROLE_COLORS["assistant"]
             if agent.is_thinking:
                 # до первого контента показываем лоадер вместо пустой панели
+                # (во время LLM-вызова суммаризации — «сжимаю контекст…»)
+                loading = "сжимаю контекст…" if agent.is_compacting else "думаю…"
                 blocks.append(
                     Panel(
-                        Spinner("dots", text=Text("думаю…", style="dim")),
+                        Spinner("dots", text=Text(loading, style="dim")),
                         title=f"{title} …",
                         border_style=color,
                     )
@@ -158,7 +160,16 @@ class MessageList(ScrollView):
                 blocks.append(_tokens_line(0, agent.streaming_out_estimate, estimated=True))
 
         for kind, text in tab.notes:
-            style = "red" if kind == "error" else "yellow" if kind == "warning" else "dim"
+            # compact — заметка о сжатии контекста (выделяется от прочих dim-строк)
+            style = (
+                "red"
+                if kind == "error"
+                else "yellow"
+                if kind == "warning"
+                else "cyan dim"
+                if kind == "compact"
+                else "dim"
+            )
             blocks.append(Text(text, style=style))
 
         return Group(*blocks)

@@ -268,6 +268,17 @@ def default_registry() -> CommandRegistry:
         agent.reset_totals()  # счётчики in/out/Σ описывают текущий диалог
         return "История очищена."
 
+    def _compact(ctx: CommandContext) -> str | None:
+        agent = _require_agent(ctx)
+        if agent is None:
+            return "Нет активного агента."
+        if agent.is_streaming:
+            return "Агент отвечает — дождитесь завершения запроса."
+        if not agent.memory.tail:
+            return "История пуста — сжимать нечего."
+        agent.request_compaction()
+        return "Контекст будет сжат при следующем сообщении."
+
     def _export(ctx: CommandContext) -> str | None:
         agent = _require_agent(ctx)
         if agent is None:
@@ -313,6 +324,9 @@ def default_registry() -> CommandRegistry:
     registry.register(Command("system", "показать / заменить системный промпт", _system, "[path]"))
     registry.register(Command("history", "показать историю диалога", _history))
     registry.register(Command("clear", "очистить историю сессии", _clear))
+    registry.register(
+        Command("compact", "сжать контекст при следующем сообщении", _compact)
+    )
     registry.register(
         Command("export", "экспортировать сессию активного агента в jsonl", _export, "[file]")
     )

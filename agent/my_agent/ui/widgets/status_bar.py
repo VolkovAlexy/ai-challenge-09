@@ -7,18 +7,11 @@ from typing import TYPE_CHECKING
 from rich.text import Text
 from textual.widget import Widget
 
+from my_agent.core.context import fmt_tokens
+
 if TYPE_CHECKING:
     from my_agent.core.agent import Agent
     from my_agent.ui.app import ChatTab
-
-
-def fmt_tokens(n: int) -> str:
-    """Компактный формат: 456 / 2039 / 12.3k / 1.5M (до 10k — точное число)."""
-    if n < 10_000:
-        return str(n)
-    if n < 1_000_000:
-        return f"{n / 1000:.1f}".rstrip("0").rstrip(".") + "k"
-    return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
 
 
 def context_part(agent: Agent) -> Text | None:

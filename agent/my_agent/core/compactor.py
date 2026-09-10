@@ -38,6 +38,9 @@ SUMMARY_MAX_TOKENS = 2048
 class CompactionResult:
     """Итог сжатия: новое саммари + сколько сообщений префикса покрыто саммари.
 
+    `removed_tokens` — оценка веса исчезнувшей из проекции части: удалённый
+    префикс + прежнее саммари, которое он заменяет (масштабируется
+    коэффициентом токенизатора ratio, т.к. chars/4 для русского занижает).
     in_tokens/out_tokens — расход LLM-вызова суммаризации (точные числа
     от API либо локальная оценка chars/4); попадают в накопительные
     счётчики сессии (Agent.totals).
@@ -45,6 +48,7 @@ class CompactionResult:
 
     summary: str
     removed: int
+    removed_tokens: int = 0
     in_tokens: int = 0
     out_tokens: int = 0
     estimated: bool = True
@@ -63,20 +67,25 @@ class ContextCompactor:
         *,
         system_prompt: str,
         previous_summary: str,
+        ratio: float = 1.0,
     ) -> int:
         """Сколько старейших сообщений удалить: хвост влезает в долю окна.
 
         Учитывает накладные расходы (системный промпт, сообщение-саммари);
         всегда оставляет минимум MIN_KEEP сообщений. 0 — сжимать нечего.
+        `ratio` — наблюдаемый коэффициент токенизатора (API / chars/4):
+        локальная оценка занижает, поэтому все оценки масштабируются ею.
         """
-        budget = int(window * COMPACT_TARGET_SHARE) - estimate_text(system_prompt)
-        if previous_summary:
-            budget -= estimate_text(previous_summary)
-        budget -= _SUMMARY_SLACK_TOKENS
+        budget = (
+            int(window * COMPACT_TARGET_SHARE)
+            - int(estimate_text(system_prompt) * ratio)
+            - int(estimate_text(previous_summary) * ratio if previous_summary else 0)
+            - _SUMMARY_SLACK_TOKENS
+        )
         acc = 0
         keep = 0
         for message in reversed(history):
-            size = estimate_messages([message])
+            size = int(estimate_messages([message]) * ratio)
             if keep >= MIN_KEEP and acc + size > budget:
                 break
             acc += size
@@ -93,14 +102,19 @@ class ContextCompactor:
         history: list[Message],
         window: int,
         system_prompt: str,
+        ratio: float = 1.0,
     ) -> CompactionResult | None:
         """Сжимает историю; None — сжимать нечего (порог формально превышен)."""
         removed = self.plan_removal(
-            history, window, system_prompt=system_prompt, previous_summary=previous_summary
+            history,
+            window,
+            system_prompt=system_prompt,
+            previous_summary=previous_summary,
+            ratio=ratio,
         )
         if removed <= 0:
             return None
-        return await self._summarize(
+        result = await self._summarize(
             removed=removed,
             model=model,
             api_base=api_base,
@@ -108,6 +122,16 @@ class ContextCompactor:
             previous_summary=previous_summary,
             messages=history[:removed],
         )
+        # вес исчезнувшей из проекции части: прежнее саммари + удалённый префикс
+        # (в оценках токенизатора API — локальная chars/4 занижает)
+        result.removed_tokens = int(
+            (
+                (estimate_text(previous_summary) if previous_summary else 0)
+                + estimate_messages(history[:removed])
+            )
+            * ratio
+        )
+        return result
 
     async def _summarize(
         self,

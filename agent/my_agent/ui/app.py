@@ -336,8 +336,9 @@ class AgentApp(App[None]):
                     "⚠ Контекст переполнен: провайдер обработал меньше токенов, чем "
                     "отправлено, — часть истории модель не видела.",
                 )
-            if tab.agent.compaction_note:
-                tab.add_note("system", tab.agent.compaction_note)
+        # заметка о сжатии — независимо от исхода хода: сжатие уже случилось
+        if tab.agent.compaction_note:
+            tab.add_note("compact", tab.agent.compaction_note)
         self._persist_tab(tab)  # завершённый ход фиксируем сразу (не дожидаясь тика)
 
     # --- таймер: батч-перерисовка и метки вкладок ---

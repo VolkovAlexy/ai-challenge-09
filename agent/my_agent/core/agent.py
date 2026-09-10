@@ -13,7 +13,7 @@ from pathlib import Path
 
 from my_agent.config.schema import AgentSettings, Config, Provider
 from my_agent.core.compactor import CompactionResult, ContextCompactor
-from my_agent.core.context import ContextBuilder, estimate_messages, estimate_text
+from my_agent.core.context import ContextBuilder, estimate_messages, estimate_text, fmt_tokens
 from my_agent.core.message import (
     ChatChunk,
     ChatRequest,
@@ -97,6 +97,10 @@ class Agent:
         # --- сжатие контекста ---
         self._compactor = ContextCompactor(llm)
         self._needs_compaction = False  # прошлый ход обрезан сервером — сжать принудительно
+        self.is_compacting = False  # сейчас идёт LLM-вызов суммаризации (читает UI)
+        # наблюдаемое отношение «токены API / локальная оценка chars/4» (1.0–4.0):
+        # локальная оценка занижает для русского — масштабируем ею компактор
+        self._token_ratio: float | None = None
         # заметка о последнем сжатии (UI выводит после завершения хода)
         self.compaction_note: str | None = None
         # --- токены (только рантайм, в сессии не сохраняются) ---
@@ -185,6 +189,18 @@ class Agent:
             self.memory.tail,
             summary=self.memory.summary,
         )
+
+    def _projected_tokens(self) -> int:
+        """Вес проекции следующего запроса к LLM.
+
+        С точным usage API (статус-бар считает по нему же): prompt + completion
+        последнего хода + оценка только что добавленного сообщения пользователя.
+        Без точного usage — локальная оценка chars/4 всей проекции.
+        """
+        if self.last_usage is not None and not self.last_usage.estimated:
+            new_user = estimate_messages(self.memory.tail[-1:]) if self.memory.tail else 0
+            return self.last_usage.prompt_tokens + self.last_usage.completion_tokens + new_user
+        return estimate_messages(self._projection())
 
     @property
     def context_share(self) -> float | None:
@@ -292,6 +308,10 @@ class Agent:
             )
             if truncated:
                 self._needs_compaction = True  # сжать при следующем ходе
+            if sent_estimate > 0:  # коэффициент токенизатора: API / chars/4
+                self._token_ratio = min(
+                    4.0, max(1.0, self._server_usage.prompt_tokens / sent_estimate)
+                )
         else:
             self.last_usage = TokenUsage(
                 prompt_tokens=estimate_messages(messages),
@@ -308,27 +328,34 @@ class Agent:
     async def _maybe_compact(self, provider: Provider, model: str) -> None:
         """Сжимает префикс истории в саммари, если контекст переполнен.
 
-        Триггеры: заполнение доли окна (compaction_threshold) по локальной
-        оценке либо обрезка контекста сервером на прошлом ходу. Чат не
-        меняется: сообщения остаются в истории, для LLM сжатый префикс
-        заменяется саммари. Пользователь видит это по заметке compaction_note
-        (UI выводит после хода).
+        Триггеры: заполнение доли окна (compaction_threshold) — по точному
+        usage API, когда он есть (локальная оценка chars/4 занижает для
+        русского, а статус-бар показывает точные числа), либо обрезка
+        контекста сервером на прошлом ходу. Чат не меняется: сообщения
+        остаются в истории, для LLM сжатый префикс заменяется саммари.
+        Пользователь видит это по заметке compaction_note (UI выводит после хода).
         """
         window = self.context_window
         threshold = self._config.compaction_threshold
-        projected = estimate_messages(self._projection())
-        share = projected / window if window > 0 else 1.0
+        share = self._projected_tokens() / window if window > 0 else 1.0
         if share < threshold and not self._needs_compaction:
             return
-        result: CompactionResult | None = await self._compactor.compact(
-            model=model,
-            api_base=provider.api_base,
-            api_key=provider.api_key,
-            previous_summary=self.memory.summary or "",
-            history=self.memory.tail,
-            window=window,
-            system_prompt=self.system_prompt,
-        )
+        ratio = self._token_ratio or 1.0
+        result: CompactionResult | None = None
+        self.is_compacting = True
+        try:
+            result = await self._compactor.compact(
+                model=model,
+                api_base=provider.api_base,
+                api_key=provider.api_key,
+                previous_summary=self.memory.summary or "",
+                history=self.memory.tail,
+                window=window,
+                system_prompt=self.system_prompt,
+                ratio=ratio,
+            )
+        finally:
+            self.is_compacting = False
         if result is None:
             self._needs_compaction = False
             return
@@ -340,9 +367,13 @@ class Agent:
             self.totals.estimated = True
         self.last_usage = None  # прошлый замер больше не соответствует проекции
         self._needs_compaction = False
+        share_after = (
+            estimate_messages(self._projection()) * ratio / window if window > 0 else 1.0
+        )
         self.compaction_note = (
-            f"Контекст заполнен на {share:.0%}: {result.removed} сообщ. → саммари "
-            f"({estimate_text(result.summary)} ток.)"
+            f"⇄ Контекст сжат: -{fmt_tokens(result.removed_tokens)} удалено, "
+            f"+{fmt_tokens(int(estimate_text(result.summary) * ratio))} саммари "
+            f"({share:.0%} → {share_after:.0%})"
         )
 
     def _accumulate_tool_calls(self, chunk: ChatChunk) -> None:
@@ -385,7 +416,12 @@ class Agent:
         self.message_usage = {}
         self.reset_totals()
         self._needs_compaction = False
+        self._token_ratio = None
         self.compaction_note = None
+
+    def request_compaction(self) -> None:
+        """Форсирует сжатие префикса истории при следующем ходе (команда /compact)."""
+        self._needs_compaction = True
 
     def reset_totals(self) -> None:
         """Обнуляет накопительные счётчики токенов сессии (in/out/Σ)."""
@@ -397,6 +433,7 @@ class Agent:
         """Валидирует id модели против config и применяет к агенту."""
         self._config.resolve_model(model_id)  # ValueError при неизвестной
         self.settings.model = model_id
+        self._token_ratio = None  # коэффициент токенизатора — свой у каждой модели
 
     def rename(self, name: str) -> None:
         self.name = name

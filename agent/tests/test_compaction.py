@@ -11,7 +11,7 @@ from my_agent.core.compactor import (
     SUMMARY_SYSTEM_PROMPT,
     ContextCompactor,
 )
-from my_agent.core.context import estimate_messages
+from my_agent.core.context import estimate_messages, estimate_text
 from my_agent.core.message import ChatChunk, Message, Role
 from my_agent.memory.persistence import SessionStore
 from my_agent.memory.session import InMemorySession, load_session, save_session
@@ -212,6 +212,47 @@ def test_compact_result_usage_estimate_without_server_usage() -> None:
     assert result.out_tokens == len("SUMMARY!") // 4
 
 
+def test_compact_result_removed_tokens() -> None:
+    """removed_tokens — оценка веса исчезнувшей из проекции части: прежнее саммари + префикс."""
+    llm = MockLLM([ChatChunk(content="SUMMARY!")])
+    compactor = ContextCompactor(llm)  # type: ignore[arg-type]
+    history = [Message(role=Role.USER, content="а" * 1000) for _ in range(4)]
+    result = asyncio.run(
+        compactor.compact(
+            model="m1",
+            api_base="http://p1/v1",
+            api_key="k1",
+            previous_summary="OLD SUMMARY TEXT",
+            history=history,
+            window=1000,
+            system_prompt="",
+        )
+    )
+    assert result is not None
+    assert result.removed >= 1
+    expected = estimate_text("OLD SUMMARY TEXT") + estimate_messages(history[: result.removed])
+    assert result.removed_tokens == expected
+
+
+def test_compact_result_removed_tokens_without_previous_summary() -> None:
+    llm = MockLLM([ChatChunk(content="SUMMARY!")])
+    compactor = ContextCompactor(llm)  # type: ignore[arg-type]
+    history = [Message(role=Role.USER, content="а" * 1000) for _ in range(4)]
+    result = asyncio.run(
+        compactor.compact(
+            model="m1",
+            api_base="http://p1/v1",
+            api_key="k1",
+            previous_summary="",
+            history=history,
+            window=1000,
+            system_prompt="",
+        )
+    )
+    assert result is not None
+    assert result.removed_tokens == estimate_messages(history[: result.removed])
+
+
 def test_compact_result_uses_server_usage() -> None:
     llm = MockLLM(
         [
@@ -263,9 +304,11 @@ def test_ask_compacts_when_threshold_exceeded() -> None:
         assert agent.memory.compacted_upto > 0
         assert len(agent.memory.history) == 8  # 4 хода × (user + assistant)
         assert agent.memory.compacted_upto < len(agent.memory.history)
-        # заметка о сжатии
+        # заметка о сжатии: что удалено, что добавлено, заполнение окна до/после
         assert agent.compaction_note is not None
         assert "саммари" in agent.compaction_note
+        assert "удалено" in agent.compaction_note
+        assert "→" in agent.compaction_note
         # саммари-вызов шёл к той же модели
         summary_call = llm.calls[0][0]
         assert summary_call.model == "m1"
@@ -278,6 +321,25 @@ def test_ask_no_compaction_below_threshold() -> None:
     assert agent.compaction_note is None
     # один вызов — сам ход, суммаризатора не было
     assert len(llm.calls) == 1
+
+
+def test_is_compacting_flag_during_and_after() -> None:
+    """Во время LLM-вызова суммаризации is_compacting=True; после хода — False."""
+    agent, _ = make_agent([ChatChunk(content="SUM")])
+    seen: list[bool] = []
+    original = agent._compactor.compact
+
+    async def spy(**kwargs: object) -> object:
+        seen.append(agent.is_compacting)
+        return await original(**kwargs)
+
+    agent._compactor.compact = spy  # type: ignore[method-assign]
+    for i in range(4):
+        agent.memory.add(Message(role=Role.USER, content=f"m{i}-" + "а" * 990))
+    asyncio.run(agent.ask("новый вопрос"))
+    assert agent.memory.summary == "SUM"  # сжатие случилось
+    assert seen == [True]
+    assert agent.is_compacting is False
 
 
 def test_compaction_counts_in_session_totals() -> None:
@@ -397,6 +459,96 @@ def test_truncated_usage_forces_next_compaction() -> None:
     assert len(llm.calls) >= 2
     assert agent.memory.summary == "ok"
     assert agent.compaction_note is not None
+
+
+# --- триггер в ask(): точный usage API ---
+
+
+def usage_chunks(prompt: int, completion: int, content: str = "ok") -> list[ChatChunk]:
+    return [
+        ChatChunk(content=content),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {"usage": {"prompt_tokens": prompt, "completion_tokens": completion}}
+        ),
+    ]
+
+
+def test_ask_compacts_on_server_usage_above_threshold() -> None:
+    """Точный usage API: жёлтый статус-бар (≥ порога) → сжатие на следующем ходе.
+
+    Локальная оценка chars/4 при этом ниже порога (для русского занижает) —
+    раньше из-за этого сжатие не запускалось, хотя бар уже жёлтый.
+    """
+    agent, llm = make_agent(usage_chunks(prompt=900, completion=20, content="SUMMARY!"))
+    asyncio.run(agent.ask("а" * 400))  # локальная оценка ~110 < 85% окна 1000
+    assert agent.memory.summary is None
+    assert agent._token_ratio == 4.0  # 900 / ~110 → clamp 4.0
+    asyncio.run(agent.ask("b" * 400))  # по usage: 900+20+~105 ≥ 850 → сжатие
+    assert agent.memory.summary == "SUMMARY!"
+    assert agent.memory.compacted_upto == 1
+    assert agent.compaction_note is not None
+    # первый вызов — суммаризатор (до основного хода)
+    assert llm.calls[0][0].model == "m1"
+
+
+def test_no_compaction_below_threshold_with_server_usage() -> None:
+    agent, llm = make_agent(usage_chunks(prompt=300, completion=20))
+    asyncio.run(agent.ask("а" * 400))
+    asyncio.run(agent.ask("ещё"))  # по usage: 300+20+~3 = 323 < 850
+    assert agent.memory.summary is None
+    assert agent.compaction_note is None
+    # оба вызова — ходы, суммаризатора не было
+    assert len(llm.calls) == 2
+
+
+def test_token_ratio_from_server_usage() -> None:
+    """ratio = prompt_tokens API / локальная оценка того же промпта, clamp 1..4."""
+    agent, _ = make_agent(usage_chunks(prompt=120, completion=5))
+    asyncio.run(agent.ask("а" * 400))
+    sent = [
+        Message(role=Role.SYSTEM, content="SP"),
+        Message(role=Role.USER, content="а" * 400),
+    ]
+    assert agent._token_ratio == min(4.0, max(1.0, 120 / estimate_messages(sent)))
+    # заниженный usage → clamp снизу
+    agent2, _ = make_agent(usage_chunks(prompt=10, completion=5))
+    asyncio.run(agent2.ask("а" * 400))
+    assert agent2._token_ratio == 1.0
+    # смена модели сбрасывает коэффициент
+    agent.set_model("p1:m1")
+    assert agent._token_ratio is None
+
+
+def test_request_compaction_forces_below_threshold() -> None:
+    agent, _ = make_agent([ChatChunk(content="SUM")])
+    agent.memory.add(Message(role=Role.USER, content="а" * 1600))
+    agent.memory.add(Message(role=Role.ASSISTANT, content="ok"))
+    agent.memory.add(Message(role=Role.USER, content="б" * 1600))
+    # без флага: локальная оценка ~800 < 85% окна 1000 → сжатия нет
+    asyncio.run(agent.ask("hi"))
+    assert agent.memory.summary is None
+    # /compact форсирует сжатие на следующем ходе
+    agent.request_compaction()
+    asyncio.run(agent.ask("hi"))
+    assert agent.memory.summary == "SUM"
+    assert agent.compaction_note is not None
+
+
+def test_compact_command_sets_flag() -> None:
+    from my_agent.commands.registry import CommandContext, default_registry
+
+    registry = default_registry()
+    agent, _ = make_agent([ChatChunk(content="ok")])
+    agent.memory.add(Message(role=Role.USER, content="hi"))
+    ctx = CommandContext(app=None, agent=agent)  # type: ignore[arg-type]
+    assert registry.run(ctx, "/compact") is not None
+    assert agent._needs_compaction is True
+    # пустая история — сжимать нечего
+    agent2, _ = make_agent([ChatChunk(content="ok")])
+    ctx2 = CommandContext(app=None, agent=agent2)  # type: ignore[arg-type]
+    out = registry.run(ctx2, "/compact")
+    assert out is not None and "нечего" in out
+    assert agent2._needs_compaction is False
 
 
 # --- хранение саммари ---
