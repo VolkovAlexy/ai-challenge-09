@@ -93,10 +93,16 @@ class ToolCallDelta(BaseModel):
 
 
 class Usage(BaseModel):
-    """Потребление токенов, возвращаемое API (финальный чанк стрима)."""
+    """Потребление токенов, возвращаемое API (финальный чанк стрима).
+
+    completion_tokens — весь вывод модели целиком, включая размышления
+    thinking-моделей; reasoning_tokens — из них доля размышлений
+    (completion_tokens_details.reasoning_tokens, 0 если API не отдал).
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -165,7 +171,13 @@ class ChatChunk(BaseModel):
         completion = raw.get("completion_tokens")
         if not isinstance(prompt, int) or not isinstance(completion, int):
             return None
-        return Usage(prompt_tokens=prompt, completion_tokens=completion)
+        details = raw.get("completion_tokens_details")
+        reasoning = details.get("reasoning_tokens") if isinstance(details, dict) else None
+        return Usage(
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            reasoning_tokens=reasoning if isinstance(reasoning, int) else 0,
+        )
 
     @staticmethod
     def _parse_error(raw: Any) -> str | None:

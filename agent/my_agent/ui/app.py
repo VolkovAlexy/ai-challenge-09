@@ -202,6 +202,7 @@ class AgentApp(App[None]):
             tools=self._tools,
         )
         tab = ChatTab(agent=agent)
+        agent.on_compaction = lambda note: self._on_compaction(tab, note)
         self._persist_tab(tab)  # выдаёт session_id + начальный (пустой) снапшот
         tab_id = f"agent-{id(agent)}"
         self._tabs.append(tab)
@@ -332,6 +333,16 @@ class AgentApp(App[None]):
         task.add_done_callback(lambda t: self._on_ask_done(t, tab))
         return True
 
+    def _on_compaction(self, tab: ChatTab, note: str) -> None:
+        """Заметка о сжатии — сразу после суммаризации, до ответа модели.
+
+        История в этот момент кончается сообщением пользователя, поэтому
+        anchor ставит заметку между запросом и будущим ответом. Ход после
+        сжатия может упасть — заметка уже видна.
+        """
+        tab.add_note("compact", note)
+        tab.dirty = True
+
     def _on_ask_done(self, task: asyncio.Task[str], tab: ChatTab) -> None:
         tab.dirty = True
         try:
@@ -347,12 +358,9 @@ class AgentApp(App[None]):
             if usage is not None and usage.truncated:
                 tab.add_note(
                     "warning",
-                    "⚠ Контекст переполнен: провайдер обработал меньше токенов, чем "
+                    "Контекст переполнен: провайдер обработал меньше токенов, чем "
                     "отправлено, — часть истории модель не видела.",
                 )
-        # заметка о сжатии — независимо от исхода хода: сжатие уже случилось
-        if tab.agent.compaction_note:
-            tab.add_note("compact", tab.agent.compaction_note)
         self._persist_tab(tab)  # завершённый ход фиксируем сразу (не дожидаясь тика)
 
     # --- таймер: батч-перерисовка и метки вкладок ---

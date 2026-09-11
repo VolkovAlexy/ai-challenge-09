@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,9 +45,15 @@ class TokenUsage:
     """
 
     prompt_tokens: int = 0  # полный контекст запроса: system + история
-    completion_tokens: int = 0  # ответ модели
+    completion_tokens: int = 0  # весь вывод модели, включая размышления
+    reasoning_tokens: int = 0  # из completion_tokens: размышления (think)
     estimated: bool = False
     truncated: bool = False
+
+    @property
+    def answer_tokens(self) -> int:
+        """Видимый ответ без размышлений — только он остаётся в контексте."""
+        return self.completion_tokens - self.reasoning_tokens
 
 
 @dataclass
@@ -54,7 +61,8 @@ class SessionTotals:
     """Накопительный расход токенов за сессию (рантайм, в сессии не сохраняется).
 
     in — Σ prompt_tokens всех запросов (каждый запрос переотправляет контекст
-    целиком — это честный расход); out — Σ completion_tokens ответов.
+    целиком — это честный расход); out — Σ completion_tokens ответов, включая
+    размышления thinking-моделей.
     Учитываются и LLM-вызовы сжатия контекста. `estimated` — хоть одна
     составляющая получена локальной оценкой (chars/4), а не от API.
     """
@@ -103,8 +111,10 @@ class Agent:
         # наблюдаемое отношение «токены API / локальная оценка chars/4» (1.0–4.0):
         # локальная оценка занижает для русского — масштабируем ею компактор
         self._token_ratio: float | None = None
-        # заметка о последнем сжатии (UI выводит после завершения хода)
+        # заметка о последнем сжатии (текст совпадает с тем, что уходит в колбэк)
         self.compaction_note: str | None = None
+        # подписка UI: вызывается сразу после успешного сжатия, до ответа модели
+        self.on_compaction: Callable[[str], None] | None = None
         # --- токены (только рантайм, в сессии не сохраняются) ---
         self.last_usage: TokenUsage | None = None
         # индекс assistant-сообщения в истории → токены его хода
@@ -172,15 +182,15 @@ class Agent:
         """Текущий вес контекста: то, что уйдёт в LLM со следующим промптом.
 
         system + саммари + несжатая история (+ новый пользовательский текст
-        в момент отправки). После хода = prompt + completion последнего
-        запроса; во время стрима ответ добавляется живой оценкой; без
-        единого хода — оценка проекции.
+        в момент отправки). После хода = prompt + answer (видимый ответ;
+        размышления в API-проекцию не уходят); во время стрима ответ
+        добавляется живой оценкой; без единого хода — оценка проекции.
         """
         if self.last_usage is not None:
             if self.is_streaming:
                 return self.last_usage.prompt_tokens + self.streaming_out_estimate, True
             return (
-                self.last_usage.prompt_tokens + self.last_usage.completion_tokens,
+                self.last_usage.prompt_tokens + self.last_usage.answer_tokens,
                 self.last_usage.estimated,
             )
         return estimate_messages(self._projection()), True
@@ -200,13 +210,14 @@ class Agent:
     def _projected_tokens(self) -> int:
         """Вес проекции следующего запроса к LLM.
 
-        С точным usage API (статус-бар считает по нему же): prompt + completion
-        последнего хода + оценка только что добавленного сообщения пользователя.
+        С точным usage API (статус-бар считает по нему же): prompt + видимый
+        ответ последнего хода (размышления в проекцию не уходят) + оценка
+        только что добавленного сообщения пользователя.
         Без точного usage — локальная оценка chars/4 всей проекции.
         """
         if self.last_usage is not None and not self.last_usage.estimated:
             new_user = estimate_messages(self.memory.tail[-1:]) if self.memory.tail else 0
-            return self.last_usage.prompt_tokens + self.last_usage.completion_tokens + new_user
+            return self.last_usage.prompt_tokens + self.last_usage.answer_tokens + new_user
         return estimate_messages(self._projection())
 
     @property
@@ -246,7 +257,8 @@ class Agent:
         Перед запросом: если контекст заполнил долю окна (compaction_threshold)
         либо прошлый ход был обрезан сервером — старейший префикс истории
         сжимается в саммари (чат при этом не меняется, меняется только
-        проекция для LLM; заметка — в self.compaction_note).
+        проекция для LLM; заметка — в self.compaction_note и колбэку
+        on_compaction (UI показывает её до ответа модели).
         """
         self.compaction_note = None
         self.memory.add(Message(role=Role.USER, content=text))
@@ -335,7 +347,10 @@ class Agent:
             truncated = self._server_usage.prompt_tokens < sent_estimate * TRUNCATION_RATIO
             self.last_usage = TokenUsage(
                 prompt_tokens=self._server_usage.prompt_tokens,
+                # completion_tokens у API уже включает размышления; reasoning
+                # выделяем отдельно (для строки think под репликой и оценок)
                 completion_tokens=self._server_usage.completion_tokens,
+                reasoning_tokens=self._server_usage.reasoning_tokens,
                 estimated=False,
                 truncated=truncated,
             )
@@ -346,9 +361,13 @@ class Agent:
                     4.0, max(1.0, self._server_usage.prompt_tokens / sent_estimate)
                 )
         else:
+            # API не вернул usage: reasoning-токены оцениваем тоже — thinking-
+            # модель может израсходовать на размышления львиную долю вывода
+            reasoning = estimate_text(self._stream_reasoning)
             self.last_usage = TokenUsage(
                 prompt_tokens=estimate_messages(messages),
-                completion_tokens=estimate_text(self._stream_text),
+                completion_tokens=estimate_text(self._stream_text) + reasoning,
+                reasoning_tokens=reasoning,
                 estimated=True,
             )
         self.totals.in_tokens += self.last_usage.prompt_tokens
@@ -366,7 +385,8 @@ class Agent:
         русского, а статус-бар показывает точные числа), либо обрезка
         контекста сервером на прошлом ходу. Чат не меняется: сообщения
         остаются в истории, для LLM сжатый префикс заменяется саммари.
-        Пользователь видит это по заметке compaction_note (UI выводит после хода).
+        Пользователь видит это по заметке compaction_note (UI выводит сразу
+        после сжатия, до ответа модели, через колбэк on_compaction).
         """
         window = self.context_window
         threshold = self._config.compaction_threshold
@@ -404,10 +424,14 @@ class Agent:
             estimate_messages(self._projection()) * ratio / window if window > 0 else 1.0
         )
         self.compaction_note = (
-            f"⇄ Контекст сжат: -{fmt_tokens(result.removed_tokens)} удалено, "
+            f"Контекст сжат: -{fmt_tokens(result.removed_tokens)} удалено, "
             f"+{fmt_tokens(int(estimate_text(result.summary) * ratio))} саммари "
             f"({share:.0%} → {share_after:.0%})"
         )
+        if self.on_compaction is not None:
+            # UI вставляет заметку в таймлайн сейчас: между запросом пользователя
+            # и будущим ответом. Даже если ход после сжатия упадёт — она уже видна.
+            self.on_compaction(self.compaction_note)
 
     def _accumulate_tool_calls(self, chunk: ChatChunk) -> None:
         """Накопительный разбор tool_calls в стриме (дальше — задел под ToolRegistry)."""

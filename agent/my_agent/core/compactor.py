@@ -177,6 +177,7 @@ class ContextCompactor:
             max_tokens=max_tokens,
         )
         text = ""
+        reasoning_text = ""
         finish_reason: str | None = None
         server_usage: Usage | None = None
         async for chunk in self._llm.astream(request, api_base, api_key):
@@ -186,6 +187,8 @@ class ContextCompactor:
                 finish_reason = chunk.finish_reason
             if chunk.content:
                 text += chunk.content
+            if chunk.reasoning:
+                reasoning_text += chunk.reasoning
         text = text.strip()
         if not text:
             if finish_reason == "length":
@@ -203,11 +206,12 @@ class ContextCompactor:
                 estimated=False,
             )
         else:
+            # thinking-суммаризатор тоже тратит токены на размышления
             result = CompactionResult(
                 summary=text,
                 removed=removed,
                 in_tokens=estimate_messages(request.messages),
-                out_tokens=estimate_text(text),
+                out_tokens=estimate_text(text) + estimate_text(reasoning_text),
             )
         return result
 

@@ -1,6 +1,6 @@
 """MessageList: история диалога + текущий стриминг + заметки команд.
 
-Под репликами ассистента — строка «tokens: in N · out M» (usage хода,
+Под репликами ассистента — строка «tokens: in N · out M · think K» (usage хода,
 runtime-данные агента). Пока стрим не начал выводить контент — лоадер
 «думаю…» (спиннер).
 
@@ -27,7 +27,7 @@ from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.visual import Visual, visualize
 
-from my_agent.core.context import fmt_tokens
+from my_agent.core.context import estimate_text, fmt_tokens
 from my_agent.core.message import Message, Role
 from my_agent.ui.colors import ANSWER_STYLE, REASONING_STYLE, TOKENS_STYLE, USER_BUBBLE_BG
 
@@ -41,40 +41,55 @@ BUBBLE_BOX = Box("    \n    \n    \n    \n    \n    \n    \n    ")
 # box только с левой вертикальной линией — размышления выглядят цитатой
 REASONING_BOX = Box("│   \n│   \n│   \n│   \n│   \n│   \n│   \n│   ")
 
-# Заметки (вывод команд, ошибки) — баблы с обводкой по kind (реплики — без рамок).
+# Заметки (вывод команд, ошибки) — цитаты с цветной полосой слева по kind
+# (реплики — без рамок): [заголовок, цвет, иконка типа].
 _NOTE_STYLES = {
-    "error": ("ошибка", "red"),
-    "system": ("инфо", "orange1"),
-    "warning": ("внимание", "yellow"),
-    "compact": ("сжатие", "cyan"),
+    "error": ("ошибка", "red", "✗"),
+    "system": ("инфо", "orange1", "ℹ"),
+    "warning": ("внимание", "yellow", "⚠"),
+    "compact": ("сжатие", "cyan", "⇄"),
 }
 
 
-def _tokens_line(in_tokens: int, out_tokens: int, estimated: bool) -> Text:
-    """Dim-строка «tokens: in 120 · out 50» под репликой ассистента (~ при оценке).
+def _tokens_line(
+    in_tokens: int, out_tokens: int, think_tokens: int, estimated: bool
+) -> Text:
+    """Dim-строка «tokens: in 120 · out 50 · think 2k» под репликой ассистента (~ при оценке).
 
     in — полный промпт хода (system + история: каждый запрос переотправляет
-    контекст целиком), out — ответ модели. Во время стрима in ещё неизвестен
-    (in_tokens == 0) — печатается только out. Строка слева с иконкой ◈ и
-    отделена пустой строкой (см. _tokens_block).
+    контекст целиком), out — видимый ответ модели, think — токены размышлений
+    thinking-моделей (в out статус-бара входят и они, здесь выделены отдельно).
+    Во время стрима in ещё неизвестен (in_tokens == 0) — печатается без in.
+    Строка слева с иконкой ◈ и отделена пустой строкой (см. _tokens_block).
     """
     mark = "~" if estimated else ""
+    out = f"out {mark}{fmt_tokens(out_tokens)}"
+    if think_tokens > 0:
+        out += f" · think {mark}{fmt_tokens(think_tokens)}"
     if in_tokens > 0:
-        body = f"tokens: in {mark}{fmt_tokens(in_tokens)} · out {mark}{fmt_tokens(out_tokens)}"
+        body = f"tokens: in {mark}{fmt_tokens(in_tokens)} · {out}"
     else:
-        body = f"tokens: out {mark}{fmt_tokens(out_tokens)}"
+        body = f"tokens: {out}"
     return Text(f"  ◈ {body}", style=TOKENS_STYLE)
 
 
-def _tokens_block(in_tokens: int, out_tokens: int, estimated: bool) -> list[RenderableType]:
+def _tokens_block(
+    in_tokens: int, out_tokens: int, think_tokens: int, estimated: bool
+) -> list[RenderableType]:
     """[пустая строка-разделитель, tokens-строка] — чтобы отделить от реплики."""
-    return [Text(""), _tokens_line(in_tokens, out_tokens, estimated)]
+    return [Text(""), _tokens_line(in_tokens, out_tokens, think_tokens, estimated)]
 
 
 def _note_panel(note: Note) -> Panel:
-    """Бабл заметки: с обводкой и заголовком по kind (реплики — без рамок)."""
-    title, border = _NOTE_STYLES.get(note.kind, ("инфо", "orange1"))
-    return Panel(Text(note.text), title=title, border_style=border)
+    """Бабл заметки: тонкая полоса слева цвета типа + иконка и заголовок (реплики — без рамок)."""
+    title, border, icon = _NOTE_STYLES.get(note.kind, ("инфо", "orange1", "ℹ"))
+    return Panel(
+        Text(note.text),
+        box=REASONING_BOX,
+        border_style=border,
+        title=f"{icon} {title}",
+        title_align="left",
+    )
 
 
 def _reasoning_block(text: str) -> Panel:
@@ -193,7 +208,17 @@ class MessageList(ScrollView):
                 blocks.append(_note_panel(note))
             blocks.extend(_message_blocks(message))
             if message.role == Role.ASSISTANT and (u := agent.message_usage.get(index)) is not None:
-                blocks.extend(_tokens_block(u.prompt_tokens, u.completion_tokens, u.estimated))
+                blocks.extend(
+                    _tokens_block(
+                        u.prompt_tokens, u.answer_tokens, u.reasoning_tokens, u.estimated
+                    )
+                )
+
+        # хвостовые заметки — до стрим-блока: заметка о сжатии вставляется
+        # после запроса пользователя, и при старте стрима она должна остаться
+        # между запросом и ответом, а не уезжать вниз вместе с растущим стримом
+        for note in notes_at.get(len(history), []):
+            blocks.append(_note_panel(note))
 
         if agent.is_streaming:
             if agent.is_compacting:
@@ -211,10 +236,14 @@ class MessageList(ScrollView):
                 names = ", ".join(t.function.name or "?" for t in tcs)
                 extra = f"  [tool_calls: {names}]" if tcs else ""
                 blocks.append(Text(stream + "▌" + extra, style=ANSWER_STYLE))
-                blocks.extend(_tokens_block(0, agent.streaming_out_estimate, estimated=True))
-
-        # хвост: заметки, случившиеся после последнего сообщения (и при пустой истории)
-        for note in notes_at.get(len(history), []):
-            blocks.append(_note_panel(note))
+                # live-оценки: out по видимому тексту, think — по размышлениям
+                blocks.extend(
+                    _tokens_block(
+                        0,
+                        agent.streaming_out_estimate,
+                        estimate_text(agent.streaming_reasoning),
+                    estimated=True,
+                )
+            )
 
         return Group(*blocks)

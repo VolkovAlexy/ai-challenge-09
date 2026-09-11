@@ -276,6 +276,27 @@ def test_compact_result_usage_estimate_without_server_usage() -> None:
     assert result.out_tokens == len("SUMMARY!") // 4
 
 
+def test_compact_estimate_counts_summarizer_reasoning() -> None:
+    """Thinking-суммаризатор без usage: размышления тоже входят в оценку out."""
+    llm = MockLLM([ChatChunk(reasoning="раз" * 40), ChatChunk(content="SUMMARY!")])
+    compactor = ContextCompactor(llm)  # type: ignore[arg-type]
+    history = [Message(role=Role.USER, content="а" * 1000) for _ in range(4)]
+    result = asyncio.run(
+        compactor.compact(
+            model="m1",
+            api_base="http://p1/v1",
+            api_key="k1",
+            previous_summary="",
+            history=history,
+            window=1000,
+            system_prompt="",
+        )
+    )
+    assert result is not None
+    assert result.estimated is True
+    assert result.out_tokens == (len("SUMMARY!") + 120) // 4
+
+
 def test_compact_result_removed_tokens() -> None:
     """removed_tokens — оценка веса исчезнувшей из проекции части: прежнее саммари + префикс."""
     llm = MockLLM([ChatChunk(content="SUMMARY!")])
@@ -405,6 +426,27 @@ def test_is_compacting_flag_during_and_after() -> None:
     assert agent.memory.summary == "SUM"  # сжатие случилось
     assert seen == [True]
     assert agent.is_compacting is False
+
+
+def test_on_compaction_callback_fires_before_assistant_reply() -> None:
+    """UI-колбэк срабатывает сразу после сжатия, до появления ответа в истории."""
+    agent, _ = make_agent([ChatChunk(content="SUM")])
+    snapshots: list[tuple[str, int, Role]] = []
+
+    def on_compaction(note: str) -> None:
+        snapshots.append((note, len(agent.memory.history), agent.memory.history[-1].role))
+
+    agent.on_compaction = on_compaction
+    for i in range(4):
+        agent.memory.add(Message(role=Role.USER, content=f"m{i}-" + "а" * 990))
+    asyncio.run(agent.ask("новый вопрос"))
+    assert agent.memory.summary == "SUM"  # сжатие случилось
+    assert len(snapshots) == 1
+    note, history_len, last_role = snapshots[0]
+    assert note == agent.compaction_note
+    # история кончается запросом пользователя: заметка встанет между запросом и ответом
+    assert last_role is Role.USER
+    assert history_len == len(agent.memory.history) - 1  # ответ ассистента дописан позже
 
 
 def test_compaction_counts_in_session_totals() -> None:

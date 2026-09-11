@@ -74,6 +74,41 @@ def test_usage_chunk_with_empty_choices() -> None:
     assert chunk.content is None
 
 
+def test_usage_parses_reasoning_tokens() -> None:
+    """Thinking-модели: completion_tokens_details.reasoning_tokens — доля размышлений."""
+    chunk = ChatChunk.from_sse_data(
+        {
+            "usage": {
+                "prompt_tokens": 28,
+                "completion_tokens": 3251,
+                "completion_tokens_details": {"reasoning_tokens": 3233},
+            }
+        }
+    )
+    assert chunk is not None
+    assert chunk.usage is not None
+    assert chunk.usage.prompt_tokens == 28
+    assert chunk.usage.completion_tokens == 3251
+    assert chunk.usage.reasoning_tokens == 3233
+    assert chunk.usage.total_tokens == 3279
+
+    # без details / без reasoning_tokens — 0, не ошибка
+    chunk = ChatChunk.from_sse_data({"usage": {"prompt_tokens": 1, "completion_tokens": 2}})
+    assert chunk is not None and chunk.usage is not None
+    assert chunk.usage.reasoning_tokens == 0
+    chunk = ChatChunk.from_sse_data(
+        {
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 2,
+                "completion_tokens_details": {"reasoning_tokens": "x"},
+            }
+        }
+    )
+    assert chunk is not None and chunk.usage is not None
+    assert chunk.usage.reasoning_tokens == 0
+
+
 def test_usage_attached_to_normal_chunk() -> None:
     chunk = ChatChunk.from_sse_data(
         {
@@ -252,6 +287,38 @@ def test_usage_from_server() -> None:
     assert agent.message_usage[1] is agent.last_usage
 
 
+def test_usage_from_server_counts_reasoning() -> None:
+    """completion_tokens у API включает размышления; reasoning выделяется из details.
+
+    out статус-бара — весь вывод (ответ + размышления), answer_tokens — видимый
+    ответ (только он остаётся в контексте: reasoning в API не переотправляется).
+    """
+    chunks = [
+        ChatChunk(reasoning="думаю…"),
+        ChatChunk(content="Ответ"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "completion_tokens_details": {"reasoning_tokens": 45},
+                }
+            }
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    assert agent.last_usage is not None
+    assert agent.last_usage.completion_tokens == 50
+    assert agent.last_usage.reasoning_tokens == 45
+    assert agent.last_usage.answer_tokens == 5
+    assert agent.totals.out_tokens == 50  # весь вывод, включая размышления
+    # видимый ответ — 5 токенов размышлений + 45 из details не «съедают» его
+    tokens, estimated = agent.context_now
+    assert estimated is False
+    assert tokens == 100 + 5  # prompt + видимый ответ
+
+
 def test_usage_fallback_estimate() -> None:
     chunks = [ChatChunk(content="Привет мир"), ChatChunk(finish_reason="stop")]
     agent, _ = make_agent(chunks)
@@ -261,6 +328,23 @@ def test_usage_fallback_estimate() -> None:
     assert agent.last_usage.completion_tokens == len("Привет мир") // 4
     assert agent.last_usage.prompt_tokens > 0
     assert agent.message_usage[1] is agent.last_usage
+
+
+def test_usage_fallback_estimate_counts_reasoning() -> None:
+    """API не вернул usage: размышления тоже оцениваются chars/4 (не теряются)."""
+    reasoning = "раз" * 40  # 120 символов → ~30 токенов
+    chunks = [
+        ChatChunk(reasoning=reasoning),
+        ChatChunk(content="Привет мир"),
+        ChatChunk(finish_reason="stop"),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    assert agent.last_usage is not None
+    assert agent.last_usage.estimated is True
+    assert agent.last_usage.reasoning_tokens == len(reasoning) // 4
+    assert agent.last_usage.completion_tokens == len("Привет мир") // 4 + len(reasoning) // 4
+    assert agent.last_usage.answer_tokens == len("Привет мир") // 4
 
 
 def test_message_usage_per_turn() -> None:
@@ -658,6 +742,26 @@ def test_context_part_exact_after_server_usage() -> None:
     assert context_part(agent).plain == "context 2594/32.8k (8%)"
 
 
+def test_context_now_excludes_reasoning_tokens() -> None:
+    """Размышления в проекцию не уходят: context = prompt + видимый ответ."""
+    chunks = [
+        ChatChunk(reasoning="думаю…"),
+        ChatChunk(content="ok"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 555,
+                    "completion_tokens_details": {"reasoning_tokens": 550},
+                }
+            }
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    assert context_part(agent).plain == "context 105/32.8k (0%)"
+
+
 def test_context_part_warns_when_truncated() -> None:
     long_text = "б" * 4000
     chunks = [
@@ -699,17 +803,40 @@ def test_tokens_line_under_assistant_message() -> None:
     assert any(t.plain.strip() == "◈ tokens: in 100 · out 50" for t in texts)
 
 
+def test_tokens_line_shows_think_separately() -> None:
+    """Thinking-модели: think — отдельная составляющая строки (out здесь без размышлений)."""
+    chunks = [
+        ChatChunk(reasoning="думаю…"),
+        ChatChunk(content="Ответ"),
+        ChatChunk.from_sse_data(  # type: ignore[arg-type]
+            {
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "completion_tokens_details": {"reasoning_tokens": 45},
+                }
+            }
+        ),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    rendered = MessageList(ChatTab(agent=agent)).render()
+    assert isinstance(rendered, Group)
+    texts = [b for b in rendered.renderables if isinstance(b, Text)]
+    assert any(t.plain.strip() == "◈ tokens: in 100 · out 5 · think 45" for t in texts)
+
+
 def test_warning_note_rendered_yellow_bubble() -> None:
-    """Заметки kind='warning' (переполнение контекста) — баблы с жёлтой обводкой."""
+    """Заметки kind='warning' (переполнение контекста) — жёлтая полоса слева."""
     agent, _ = make_agent([ChatChunk(content="ok")])
     tab = ChatTab(agent=agent)
-    tab.add_note("warning", "⚠ Контекст переполнен")
+    tab.add_note("warning", "Контекст переполнен")
     rendered = MessageList(tab).render()
     assert isinstance(rendered, Group)
     panels = [b for b in rendered.renderables if isinstance(b, Panel)]
     assert any(
         "Контекст переполнен" in p.renderable.plain and p.border_style == "yellow"
-        and p.title == "внимание"
+        and p.title == "⚠ внимание"
         for p in panels
     )
 
@@ -727,13 +854,13 @@ def test_note_anchored_in_chat_timeline() -> None:
     for block in rendered.renderables:
         if isinstance(block, Panel) and block.title is None:
             order.append("message")  # реплики — баблы без заголовка
-        elif isinstance(block, Panel) and block.title == "инфо":
+        elif isinstance(block, Panel) and block.title == "ℹ инфо":
             order.append("note")
     assert order == ["message", "note", "message"]
 
 
 def test_error_and_system_notes_rendered_as_bubbles() -> None:
-    """error — красная обводка, system — оранжевая; обе — баблы с заголовками."""
+    """error — красная полоса слева, system — оранжевая; заголовки с иконками."""
     agent, _ = make_agent([ChatChunk(content="ok")])
     tab = ChatTab(agent=agent)
     tab.add_note("error", "Ошибка LLM: таймаут")
@@ -743,12 +870,12 @@ def test_error_and_system_notes_rendered_as_bubbles() -> None:
     panels = [b for b in rendered.renderables if isinstance(b, Panel)]
     assert any(
         "Ошибка LLM" in p.renderable.plain and p.border_style == "red"
-        and p.title == "ошибка"
+        and p.title == "✗ ошибка"
         for p in panels
     )
     assert any(
         "не найдена" in p.renderable.plain and p.border_style == "orange1"
-        and p.title == "инфо"
+        and p.title == "ℹ инфо"
         for p in panels
     )
 
@@ -767,6 +894,22 @@ def test_estimated_tokens_line_under_assistant_message() -> None:
     assert any(t.plain.strip() == expected for t in texts)
 
 
+def test_estimated_tokens_line_with_reasoning() -> None:
+    """Оценочный ход thinking-модели: think виден и без точного usage."""
+    reasoning = "раз" * 40
+    agent, _ = make_agent([ChatChunk(reasoning=reasoning), ChatChunk(content="Привет мир")])
+    asyncio.run(agent.ask("hi"))
+    assert agent.last_usage is not None
+    rendered = MessageList(ChatTab(agent=agent)).render()
+    assert isinstance(rendered, Group)
+    texts = [b for b in rendered.renderables if isinstance(b, Text)]
+    expected = (
+        f"◈ tokens: in ~{agent.last_usage.prompt_tokens}"
+        f" · out ~{len('Привет мир') // 4} · think ~{len(reasoning) // 4}"
+    )
+    assert any(t.plain.strip() == expected for t in texts)
+
+
 def test_streaming_tokens_line_shows_only_out() -> None:
     """Во время стрима in ещё неизвестен — строка печатает только out."""
     agent, _ = make_agent([ChatChunk(content="x" * 40), ChatChunk(content="y")], delay=0.05)
@@ -779,6 +922,45 @@ def test_streaming_tokens_line_shows_only_out() -> None:
         texts = [b for b in rendered.renderables if isinstance(b, Text)]
         expected = f"◈ tokens: out ~{len('x' * 40) // 4}"
         assert any(t.plain.strip() == expected for t in texts)
+        await task
+
+    asyncio.run(scenario())
+
+
+def test_streaming_tokens_line_shows_live_think_estimate() -> None:
+    """Во время стрима после размышлений: live-оценка out и think."""
+    agent, _ = make_agent(
+        [ChatChunk(reasoning="мысли"), ChatChunk(content="x" * 40), ChatChunk(content="y")],
+        delay=0.05,
+    )
+
+    async def scenario() -> None:
+        task = agent.start_ask("hi")
+        # ждём доставки reasoning и первого чанка текста (стрим ещё идёт)
+        while agent.is_streaming and (not agent.streaming_text or not agent.streaming_reasoning):
+            await asyncio.sleep(0.01)
+        assert agent.is_streaming
+        rendered = MessageList(ChatTab(agent=agent)).render()
+        assert isinstance(rendered, Group)
+        texts = [b for b in rendered.renderables if isinstance(b, Text)]
+        expected = f"◈ tokens: out ~{len('x' * 40) // 4} · think ~{len('мысли') // 4}"
+        assert any(t.plain.strip() == expected for t in texts)
+        await task
+
+    asyncio.run(scenario())
+
+
+def test_streaming_reasoning_block_has_no_tokens_line_yet() -> None:
+    """Пока thinking-модель стримит только размышления — строки tokens ещё нет."""
+    agent, _ = make_agent([ChatChunk(reasoning="мысли"), ChatChunk(content="x")], delay=0.05)
+
+    async def scenario() -> None:
+        task = agent.start_ask("hi")
+        await asyncio.sleep(0.07)  # reasoning доставлен, контента ещё нет
+        rendered = MessageList(ChatTab(agent=agent)).render()
+        assert isinstance(rendered, Group)
+        texts = [b for b in rendered.renderables if isinstance(b, Text)]
+        assert not any("tokens:" in t.plain for t in texts)
         await task
 
     asyncio.run(scenario())
