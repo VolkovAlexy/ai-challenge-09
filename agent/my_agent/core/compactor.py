@@ -31,7 +31,12 @@ MIN_KEEP = 2
 # запас на обёртку саммари в промпте (заголовок + JSON-обвязка сообщения)
 _SUMMARY_SLACK_TOKENS = 64
 
-SUMMARY_MAX_TOKENS = 2048
+# потолок выхода суммаризатора: thinking-моделям нужен запас на размышления
+# (max_tokens у провайдера считается целиком, включая reasoning), но лимит
+# не должен пробивать COMPACT_TARGET_SHARE на малых окнах
+_SUMMARY_MAX_TOKENS_CAP = 4096
+_SUMMARY_WINDOW_SHARE = 0.25
+_SUMMARY_MIN_TOKENS = 512
 
 
 @dataclass
@@ -121,6 +126,7 @@ class ContextCompactor:
             api_key=api_key,
             previous_summary=previous_summary,
             messages=history[:removed],
+            window=window,
         )
         # вес исчезнувшей из проекции части: прежнее саммари + удалённый префикс
         # (в оценках токенизатора API — локальная chars/4 занижает)
@@ -142,6 +148,7 @@ class ContextCompactor:
         api_key: str,
         previous_summary: str,
         messages: list[Message],
+        window: int,
     ) -> CompactionResult:
         """Один запрос к LLM: предыдущая сводка + удаляемый префикс → новое саммари.
 
@@ -156,6 +163,10 @@ class ContextCompactor:
             )
         else:
             body = body + "\n\nНапиши сводку диалога."
+        max_tokens = min(
+            _SUMMARY_MAX_TOKENS_CAP,
+            max(_SUMMARY_MIN_TOKENS, int(window * _SUMMARY_WINDOW_SHARE)),
+        )
         request = ChatRequest(
             model=model,
             messages=[
@@ -163,17 +174,25 @@ class ContextCompactor:
                 Message(role=Role.USER, content=body),
             ],
             temperature=0.2,
-            max_tokens=SUMMARY_MAX_TOKENS,
+            max_tokens=max_tokens,
         )
         text = ""
+        finish_reason: str | None = None
         server_usage: Usage | None = None
         async for chunk in self._llm.astream(request, api_base, api_key):
             if chunk.usage is not None:
                 server_usage = chunk.usage
+            if chunk.finish_reason:
+                finish_reason = chunk.finish_reason
             if chunk.content:
                 text += chunk.content
         text = text.strip()
         if not text:
+            if finish_reason == "length":
+                raise LLMError(
+                    f"суммаризатор исчерпал лимит {max_tokens} токенов (возможно, "
+                    "thinking-модель потратила его на размышления), саммари не получено"
+                )
             raise LLMError("суммаризатор вернул пустой ответ")
         if server_usage is not None:
             result = CompactionResult(

@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 _ROLE_TITLES = {"user": "вы", "assistant": "ассистент", "system": "система", "tool": "tool"}
 _ROLE_COLORS = {"user": "cyan", "assistant": "green"}
 
+# сколько символов размышлений (thinking-модели) показываем в live-панели «думаю»
+_REASONING_TAIL_CHARS = 600
+
 # Заметки (вывод команд, ошибки) — те же баблы, что и реплики: kind → (заголовок, обводка)
 _NOTE_STYLES = {
     "error": ("ошибка", "red"),
@@ -161,13 +164,32 @@ class MessageList(ScrollView):
         if agent.is_streaming:
             title = _ROLE_TITLES["assistant"]
             color = _ROLE_COLORS["assistant"]
-            if agent.is_thinking:
-                # до первого контента показываем лоадер вместо пустой панели
+            if agent.is_compacting:
                 # (во время LLM-вызова суммаризации — «сжимаю контекст…»)
-                loading = "сжимаю контекст…" if agent.is_compacting else "думаю…"
                 blocks.append(
                     Panel(
-                        Spinner("dots", text=Text(loading, style="dim")),
+                        Spinner("dots", text=Text("сжимаю контекст…", style="dim")),
+                        title=f"{title} …",
+                        border_style=color,
+                    )
+                )
+            elif agent.streaming_reasoning and not agent.streaming_text:
+                # thinking-модель стримит размышления — показываем их хвост
+                tail = agent.streaming_reasoning[-_REASONING_TAIL_CHARS:]
+                if len(agent.streaming_reasoning) > _REASONING_TAIL_CHARS:
+                    tail = "…" + tail
+                blocks.append(
+                    Panel(
+                        Text(tail + "▌", style="dim"),
+                        title=f"{title} (думаю) …",
+                        border_style=color,
+                    )
+                )
+            elif agent.is_thinking:
+                # до первого контента показываем лоадер вместо пустой панели
+                blocks.append(
+                    Panel(
+                        Spinner("dots", text=Text("думаю…", style="dim")),
                         title=f"{title} …",
                         border_style=color,
                     )

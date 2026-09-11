@@ -3,6 +3,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from my_agent.config.schema import AgentSettings, validate_config
 from my_agent.core.agent import Agent
 from my_agent.core.compactor import (
@@ -13,6 +15,7 @@ from my_agent.core.compactor import (
 )
 from my_agent.core.context import estimate_messages, estimate_text
 from my_agent.core.message import ChatChunk, Message, Role
+from my_agent.llm.client import LLMError
 from my_agent.memory.persistence import SessionStore
 from my_agent.memory.session import InMemorySession, load_session, save_session
 from tests.test_agent import MockLLM
@@ -100,6 +103,16 @@ def test_compaction_threshold_bounds() -> None:
             raise AssertionError(f"threshold {bad} должен отклоняться")
 
 
+def test_compaction_threshold_default() -> None:
+    config = validate_config(
+        {
+            "providers": {"p1": {"api_base": "http://p1/v1", "models": {"m1": 100}}},
+            "default_model": "p1:m1",
+        }
+    )
+    assert config.compaction_threshold == 0.6
+
+
 # --- plan_removal ---
 
 
@@ -169,6 +182,57 @@ def test_compact_includes_previous_summary() -> None:
     user_msg = llm.calls[0][0].messages[1].content
     assert "Предыдущая сводка:" in user_msg
     assert "OLD" in user_msg
+
+
+def _prefix_for_window(window: int) -> list[Message]:
+    """Префикс, заведомо превышающий бюджет хвоста (40% окна): план удалит часть.
+
+    Сообщение «а»*1000 ≈ 250 токенов (chars/4).
+    """
+    count = max(4, int(window * COMPACT_TARGET_SHARE / 250) + 4)
+    return [Message(role=Role.USER, content="а" * 1000) for _ in range(count)]
+
+
+def test_summarize_dynamic_max_tokens() -> None:
+    """Лимит суммаризатора: min(4096, 25% окна), пол 512.
+
+    Запас для thinking-моделей (max_tokens провайдера включает reasoning)
+    без пробоя COMPACT_TARGET_SHARE на малых окнах.
+    """
+    cases = {32768: 4096, 8192: 2048, 1000: 512}
+    for window, expected in cases.items():
+        llm = MockLLM([ChatChunk(content="S")])
+        compactor = ContextCompactor(llm)  # type: ignore[arg-type]
+        asyncio.run(
+            compactor.compact(
+                model="m1",
+                api_base="http://p1/v1",
+                api_key="k1",
+                previous_summary="",
+                history=_prefix_for_window(window),
+                window=window,
+                system_prompt="",
+            )
+        )
+        assert llm.calls[0][0].max_tokens == expected
+
+
+def test_summarize_empty_length_error_mentions_limit() -> None:
+    """Пустой ответ суммаризатора с finish_reason=length — ошибка с лимитом."""
+    llm = MockLLM([ChatChunk(finish_reason="length")])
+    compactor = ContextCompactor(llm)  # type: ignore[arg-type]
+    with pytest.raises(LLMError, match="лимит"):
+        asyncio.run(
+            compactor.compact(
+                model="m1",
+                api_base="http://p1/v1",
+                api_key="k1",
+                previous_summary="",
+                history=_prefix_for_window(32768),
+                window=32768,
+                system_prompt="",
+            )
+        )
 
 
 def test_compact_returns_none_when_nothing_to_remove() -> None:
@@ -285,7 +349,8 @@ def test_compact_result_uses_server_usage() -> None:
 
 
 def test_ask_compacts_when_threshold_exceeded() -> None:
-    agent, llm = make_agent([ChatChunk(content="SUMMARY!")])
+    # порог закреплён явно: тест про превышение порога, а не про дефолт
+    agent, llm = make_agent([ChatChunk(content="SUMMARY!")], compaction_threshold=0.85)
     for text in ("q1", "q2", "q3", "q4"):
         asyncio.run(agent.ask("а" * 1000 + text))
     # 4 хода: system ~0 + 8 сообщений ~2000 токенов > 85% окна 1000
@@ -520,7 +585,8 @@ def test_token_ratio_from_server_usage() -> None:
 
 
 def test_request_compaction_forces_below_threshold() -> None:
-    agent, _ = make_agent([ChatChunk(content="SUM")])
+    # порог закреплён явно: проверяем, что ниже порога сжатия нет
+    agent, _ = make_agent([ChatChunk(content="SUM")], compaction_threshold=0.85)
     agent.memory.add(Message(role=Role.USER, content="а" * 1600))
     agent.memory.add(Message(role=Role.ASSISTANT, content="ok"))
     agent.memory.add(Message(role=Role.USER, content="б" * 1600))

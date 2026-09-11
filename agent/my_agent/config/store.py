@@ -23,7 +23,7 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "max_tokens": 4096,
     "stop": [],
     "context_window_default": 32768,
-    "compaction_threshold": 0.85,
+    "compaction_threshold": 0.6,
 }
 
 

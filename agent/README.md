@@ -34,7 +34,7 @@ uv run my-agent --model openai:gpt-4o-mini    # модель стартовог�
   "max_tokens": 4096,
   "stop": [],
   "context_window_default": 32768,
-  "compaction_threshold": 0.85
+  "compaction_threshold": 0.6
 }
 ```
 

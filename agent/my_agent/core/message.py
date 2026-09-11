@@ -108,6 +108,8 @@ class ChatChunk(BaseModel):
     """
 
     content: str | None = None
+    # размышления thinking-моделей (GLM шлёт 'reasoning', DeepSeek — 'reasoning_content')
+    reasoning: str | None = None
     tool_call_deltas: list[ToolCallDelta] = Field(default_factory=list)
     finish_reason: str | None = None
     usage: Usage | None = None
@@ -145,6 +147,7 @@ class ChatChunk(BaseModel):
             )
         return cls(
             content=delta.get("content"),
+            reasoning=delta.get("reasoning") or delta.get("reasoning_content"),
             tool_call_deltas=tool_calls,
             finish_reason=choices[0].get("finish_reason"),
             usage=usage,

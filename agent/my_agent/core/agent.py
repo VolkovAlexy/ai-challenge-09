@@ -23,7 +23,7 @@ from my_agent.core.message import (
     ToolCall,
     Usage,
 )
-from my_agent.llm.client import LLMClient
+from my_agent.llm.client import LLMClient, LLMError
 from my_agent.memory.session import InMemorySession, SessionData, save_session
 from my_agent.tools.registry import ToolRegistry
 
@@ -93,7 +93,9 @@ class Agent:
         self._tools = tools or ToolRegistry()
         self._task: asyncio.Task[str] | None = None
         self._stream_text = ""
+        self._stream_reasoning = ""  # размышления thinking-моделей (в историю не попадают)
         self._stream_tcs: dict[int, ToolCall] = {}
+        self._finish_reason: str | None = None
         # --- сжатие контекста ---
         self._compactor = ContextCompactor(llm)
         self._needs_compaction = False  # прошлый ход обрезан сервером — сжать принудительно
@@ -126,6 +128,11 @@ class Agent:
     def streaming_text(self) -> str:
         """Частичный вывод текущего запроса (для catch-up при переключении вкладок)."""
         return self._stream_text
+
+    @property
+    def streaming_reasoning(self) -> str:
+        """Частичные размышления текущего запроса (для live-индикации «думаю…»)."""
+        return self._stream_reasoning
 
     @property
     def streaming_tool_calls(self) -> list[ToolCall]:
@@ -244,7 +251,9 @@ class Agent:
         self.compaction_note = None
         self.memory.add(Message(role=Role.USER, content=text))
         self._stream_text = ""
+        self._stream_reasoning = ""
         self._stream_tcs = {}
+        self._finish_reason = None
         self._server_usage = None
         previous_usage = self.last_usage
         messages: list[Message] = []
@@ -265,9 +274,26 @@ class Agent:
             async for chunk in self._llm.astream(request, provider.api_base, provider.api_key):
                 if chunk.usage is not None:
                     self._server_usage = chunk.usage
+                if chunk.finish_reason:
+                    self._finish_reason = chunk.finish_reason
                 if chunk.content:
                     self._stream_text += chunk.content
+                if chunk.reasoning:
+                    self._stream_reasoning += chunk.reasoning
                 self._accumulate_tool_calls(chunk)
+            if not self._stream_text and not self._stream_tcs:
+                # пустой ответ не сохраняем: он бесполезен в истории и отравил бы
+                # проекцию следующего запроса. Типичный случай — thinking-модель
+                # израсходовала max_tokens размышлениями (delta.reasoning) и не
+                # начала видимый ответ (finish_reason=length).
+                if self._finish_reason == "length":
+                    raise LLMError(
+                        "модель исчерпала max_tokens на размышления и не начала ответ — "
+                        "увеличьте лимит: /max-tokens <n>"
+                    )
+                raise LLMError(
+                    f"модель вернула пустой ответ (finish_reason: {self._finish_reason})"
+                )
             self.memory.add(
                 Message(
                     role=Role.ASSISTANT,
@@ -289,7 +315,9 @@ class Agent:
             raise
         finally:
             self._stream_text = ""
+            self._stream_reasoning = ""
             self._stream_tcs = {}
+            self._finish_reason = None
 
     def _finalize_usage(self, messages: list[Message], *, assistant_added: bool) -> None:
         """Фиксирует токены завершившегося хода и привязывает их к ответу ассистента.

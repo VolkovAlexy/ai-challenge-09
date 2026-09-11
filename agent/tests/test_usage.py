@@ -114,6 +114,25 @@ def test_error_chunk_parsed_from_sse() -> None:
     assert chunk.error is None
 
 
+def test_reasoning_delta_parsed() -> None:
+    """Thinking-модели: GLM шлёт 'reasoning', DeepSeek-совместимые — 'reasoning_content'."""
+    chunk = ChatChunk.from_sse_data(
+        {"choices": [{"delta": {"reasoning": "думаю…"}, "finish_reason": None}]}
+    )
+    assert chunk is not None
+    assert chunk.reasoning == "думаю…"
+    assert chunk.content is None
+
+    chunk = ChatChunk.from_sse_data({"choices": [{"delta": {"reasoning_content": "мысленный"}}]})
+    assert chunk is not None
+    assert chunk.reasoning == "мысленный"
+
+    # без reasoning — None
+    chunk = ChatChunk.from_sse_data({"choices": [{"delta": {"content": "ok"}}]})
+    assert chunk is not None
+    assert chunk.reasoning is None
+
+
 def test_request_body_includes_stream_options() -> None:
     request = ChatRequest(model="m", messages=[Message(role=Role.USER, content="hi")])
     body = request.to_body()

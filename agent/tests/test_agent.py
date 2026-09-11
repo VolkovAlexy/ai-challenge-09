@@ -166,3 +166,27 @@ def test_cancel_ask_saves_partial() -> None:
     contents = [m.content for m in agent.memory.history]
     assert "partial" in contents[1]
     assert CANCELLED_MARK in contents[1]
+
+
+def test_ask_reasoning_only_length_raises_without_empty_message() -> None:
+    """Thinking-модель израсходовала max_tokens размышлениями (delta.reasoning):
+    LLMError, пустой assistant в историю не попадает."""
+    chunks = [
+        ChatChunk(reasoning="думаю над библиографией…"),
+        ChatChunk(finish_reason="length"),
+    ]
+    agent, _ = make_agent(chunks)
+    with pytest.raises(LLMError, match="max_tokens"):
+        asyncio.run(agent.ask("hi"))
+    assert [m.role for m in agent.memory.history] == [Role.USER]
+    assert agent.is_streaming is False
+    assert agent.streaming_reasoning == ""  # сброс в finally
+
+
+def test_ask_empty_answer_without_length_raises() -> None:
+    """Пустой ответ без контента и tool_calls — LLMError, история не замусоривается."""
+    chunks = [ChatChunk(finish_reason="stop")]
+    agent, _ = make_agent(chunks)
+    with pytest.raises(LLMError, match="пустой ответ"):
+        asyncio.run(agent.ask("hi"))
+    assert [m.role for m in agent.memory.history] == [Role.USER]

@@ -193,7 +193,7 @@ my_agent/
   "max_tokens": 4096,
   "stop": [],
   "context_window_default": 32768,
-  "compaction_threshold": 0.85
+  "compaction_threshold": 0.6
 }
 ```
 
@@ -209,7 +209,7 @@ my_agent/
   на агента командами.
 - `context_window_default` — окно по умолчанию, если у модели не указан размер;
   `context_window_for(model)` — резолв окна для агента (config → дефолт).
-- `compaction_threshold` — доля заполнения окна (0.5–1.0, по умолчанию 0.85),
+- `compaction_threshold` — доля заполнения окна (0.5–1.0, по умолчанию 0.6),
   при которой перед запросом старейший префикс истории сжимается в саммари
   (см. §4, п. 10).
 - Список моделей — только из config (авто-обнаружения через `/models` нет).

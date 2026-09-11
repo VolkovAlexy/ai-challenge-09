@@ -56,7 +56,7 @@ class Config(BaseModel):
         default=32768, gt=0, description="Окно по умолчанию, если у модели не указан размер"
     )
     compaction_threshold: float = Field(
-        default=0.85,
+        default=0.6,
         ge=0.5,
         le=1.0,
         description="Доля заполнения окна, при которой история сжимается в саммари",
