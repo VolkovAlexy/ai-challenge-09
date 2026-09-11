@@ -183,6 +183,30 @@ def test_ask_reasoning_only_length_raises_without_empty_message() -> None:
     assert agent.streaming_reasoning == ""  # сброс в finally
 
 
+def test_ask_persists_reasoning_on_assistant_message() -> None:
+    """Размышления thinking-модели сохраняются в истории (для UI) и уходят в API-проекцию
+    только через content — поле reasoning не сериализуется в to_api()."""
+    chunks = [
+        ChatChunk(reasoning="шаг 1"),
+        ChatChunk(reasoning="шаг 2"),
+        ChatChunk(content="ответ"),
+        ChatChunk(finish_reason="stop"),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    assistant = agent.memory.history[-1]
+    assert assistant.role is Role.ASSISTANT
+    assert assistant.content == "ответ"
+    assert assistant.reasoning == "шаг 1шаг 2"
+    # reasoning не уходит в API
+    assert "reasoning" not in assistant.to_api()
+    # ...и в проекцию для LLM попадает только content
+    projection = agent.context_builder.build_messages(
+        agent.system_prompt, agent.memory.tail, summary=None
+    )
+    assert all("reasoning" not in m.to_api() for m in projection)
+
+
 def test_ask_empty_answer_without_length_raises() -> None:
     """Пустой ответ без контента и tool_calls — LLMError, история не замусоривается."""
     chunks = [ChatChunk(finish_reason="stop")]

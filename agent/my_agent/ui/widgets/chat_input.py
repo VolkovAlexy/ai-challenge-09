@@ -16,13 +16,27 @@ from textual.binding import Binding
 from textual.message import Message
 from textual.widgets import TextArea
 
+from my_agent.ui.colors import USER_BUBBLE_BG_CSS
+
 if TYPE_CHECKING:
     from my_agent.ui.app import AgentApp, ChatTab
 
-MAX_INPUT_LINES = 8  # максимум видимых строк ввода (+2 на рамку)
+MAX_INPUT_LINES = 8  # максимум видимых строк ввода (+2 на вертикальный padding)
 
 
 class ChatInput(TextArea):
+    DEFAULT_CSS = f"""
+    ChatInput {{
+        border: none;
+        background: {USER_BUBBLE_BG_CSS};
+        color: white;
+        padding: 1 2;
+    }}
+    ChatInput:focus {{
+        border: none;
+    }}
+    """
+
     BINDINGS = [  # noqa: RUF012
         # priority=True — перехват до обработки клавиш самим TextArea.
         Binding("enter", "submit", "Отправить", priority=True),
@@ -50,7 +64,7 @@ class ChatInput(TextArea):
         self.tab = tab
         self._candidates: list[str] = []
         self._index = 0
-        self.styles.height = 3  # одна строка + рамка
+        self.styles.height = 3  # одна строка + отступ сверху и снизу
 
     # --- совместимость с прежним API (Input.value) ---
 
@@ -67,7 +81,7 @@ class ChatInput(TextArea):
 
     def _update_height(self) -> None:
         lines = min(self.wrapped_document.height, MAX_INPUT_LINES)
-        self.styles.height = lines + 2  # + рамка сверху/снизу
+        self.styles.height = max(lines, 1) + 2  # + строка отступа сверху и снизу
 
     def _on_text_area_changed(self, event: TextArea.Changed) -> None:
         self._update_height()

@@ -93,7 +93,7 @@ class Agent:
         self._tools = tools or ToolRegistry()
         self._task: asyncio.Task[str] | None = None
         self._stream_text = ""
-        self._stream_reasoning = ""  # размышления thinking-моделей (в историю не попадают)
+        self._stream_reasoning = ""  # размышления thinking-моделей (в API-проекцию не попадают)
         self._stream_tcs: dict[int, ToolCall] = {}
         self._finish_reason: str | None = None
         # --- сжатие контекста ---
@@ -298,6 +298,7 @@ class Agent:
                 Message(
                     role=Role.ASSISTANT,
                     content=self._stream_text or None,
+                    reasoning=self._stream_reasoning or None,
                     tool_calls=self.streaming_tool_calls or None,
                 )
             )
@@ -306,7 +307,11 @@ class Agent:
         except asyncio.CancelledError:
             if self._stream_text:
                 self.memory.add(
-                    Message(role=Role.ASSISTANT, content=self._stream_text + CANCELLED_MARK)
+                    Message(
+                        role=Role.ASSISTANT,
+                        content=self._stream_text + CANCELLED_MARK,
+                        reasoning=self._stream_reasoning or None,
+                    )
                 )
             self._finalize_usage(messages, assistant_added=bool(self._stream_text))
             raise

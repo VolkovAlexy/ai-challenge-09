@@ -56,7 +56,7 @@ async def test_multiline_paste() -> None:
         await pilot.press("ctrl+v")
         await pilot.pause()
         assert chat_input.value == "line1\nline2"
-        # высота подросла под две строки (+ рамка)
+        # высота подросла под две строки (+ отступ сверху и снизу)
         assert chat_input.styles.height.value == 4
 
 

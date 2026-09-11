@@ -71,7 +71,7 @@ class ChatTab:
 
 
 class AgentView(Vertical):
-    """Одна вкладка: список сообщений, статус-бар, строка ввода."""
+    """Одна вкладка: список сообщений, строка ввода, статус-бар под ней."""
 
     def __init__(self, tab: ChatTab) -> None:
         super().__init__(id=f"agent-{id(tab.agent)}")
@@ -82,8 +82,8 @@ class AgentView(Vertical):
 
     def compose(self) -> Iterator[Widget]:
         yield self.messages
-        yield self.status
         yield self.input
+        yield self.status
 
     def refresh_all(self) -> None:
         self.messages.refresh_follow()

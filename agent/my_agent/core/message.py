@@ -33,6 +33,9 @@ class ToolCall(BaseModel):
 class Message(BaseModel):
     role: Role
     content: str | None = None
+    # размышления thinking-моделей: хранятся в истории ради UI (чат показывает
+    # их целиком), но в API не уходят — to_api() их не сериализует
+    reasoning: str | None = None
     name: str | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None

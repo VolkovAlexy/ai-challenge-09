@@ -39,7 +39,9 @@ def make_agent(name: str = "chat-1") -> Agent:
 def test_export_load_roundtrip(tmp_path: Path) -> None:
     agent = make_agent("my-chat")
     agent.memory.add(Message(role=Role.USER, content="привет"))
-    agent.memory.add(Message(role=Role.ASSISTANT, content="здравствуйте"))
+    agent.memory.add(
+        Message(role=Role.ASSISTANT, content="здравствуйте", reasoning="мысленный процесс")
+    )
     agent.settings.model = "p1:m9"
     agent.settings.temperature = 0.3
     agent.settings.stop = ["END"]
@@ -54,6 +56,7 @@ def test_export_load_roundtrip(tmp_path: Path) -> None:
     assert data.system_prompt == "SP-TEST"
     assert [m.content for m in data.history] == ["привет", "здравствуйте"]
     assert [m.role for m in data.history] == [Role.USER, Role.ASSISTANT]
+    assert data.history[1].reasoning == "мысленный процесс"
 
 
 def test_export_creates_parent_dirs(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.box import Box
 from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.spinner import Spinner
@@ -27,18 +28,20 @@ from textual.strip import Strip
 from textual.visual import Visual, visualize
 
 from my_agent.core.context import fmt_tokens
-from my_agent.core.message import Role
+from my_agent.core.message import Message, Role
+from my_agent.ui.colors import ANSWER_STYLE, REASONING_STYLE, TOKENS_STYLE, USER_BUBBLE_BG
 
 if TYPE_CHECKING:
     from my_agent.ui.app import ChatTab, Note
 
-_ROLE_TITLES = {"user": "вы", "assistant": "ассистент", "system": "система", "tool": "tool"}
-_ROLE_COLORS = {"user": "cyan", "assistant": "green"}
+# пустой box (в Rich 15 константа box.EMPTY удалена): ни одного символа рамки —
+# бабл пользователя рисуется фоном без обводки
+BUBBLE_BOX = Box("    \n    \n    \n    \n    \n    \n    \n    ")
 
-# сколько символов размышлений (thinking-модели) показываем в live-панели «думаю»
-_REASONING_TAIL_CHARS = 600
+# box только с левой вертикальной линией — размышления выглядят цитатой
+REASONING_BOX = Box("│   \n│   \n│   \n│   \n│   \n│   \n│   \n│   ")
 
-# Заметки (вывод команд, ошибки) — те же баблы, что и реплики: kind → (заголовок, обводка)
+# Заметки (вывод команд, ошибки) — баблы с обводкой по kind (реплики — без рамок).
 _NOTE_STYLES = {
     "error": ("ошибка", "red"),
     "system": ("инфо", "orange1"),
@@ -52,21 +55,60 @@ def _tokens_line(in_tokens: int, out_tokens: int, estimated: bool) -> Text:
 
     in — полный промпт хода (system + история: каждый запрос переотправляет
     контекст целиком), out — ответ модели. Во время стрима in ещё неизвестен
-    (in_tokens == 0) — печатается только out.
+    (in_tokens == 0) — печатается только out. Строка слева с иконкой ◈ и
+    отделена пустой строкой (см. _tokens_block).
     """
     mark = "~" if estimated else ""
     if in_tokens > 0:
-        return Text(
-            f"  tokens: in {mark}{fmt_tokens(in_tokens)} · out {mark}{fmt_tokens(out_tokens)}",
-            style="dim",
-        )
-    return Text(f"  tokens: out {mark}{fmt_tokens(out_tokens)}", style="dim")
+        body = f"tokens: in {mark}{fmt_tokens(in_tokens)} · out {mark}{fmt_tokens(out_tokens)}"
+    else:
+        body = f"tokens: out {mark}{fmt_tokens(out_tokens)}"
+    return Text(f"  ◈ {body}", style=TOKENS_STYLE)
+
+
+def _tokens_block(in_tokens: int, out_tokens: int, estimated: bool) -> list[RenderableType]:
+    """[пустая строка-разделитель, tokens-строка] — чтобы отделить от реплики."""
+    return [Text(""), _tokens_line(in_tokens, out_tokens, estimated)]
 
 
 def _note_panel(note: Note) -> Panel:
-    """Бабл заметки: тот же Panel, что у реплик, с обводкой по kind."""
+    """Бабл заметки: с обводкой и заголовком по kind (реплики — без рамок)."""
     title, border = _NOTE_STYLES.get(note.kind, ("инфо", "orange1"))
     return Panel(Text(note.text), title=title, border_style=border)
+
+
+def _reasoning_block(text: str) -> Panel:
+    """Блок размышлений: приглушённо-серый текст с серой полосой слева (цитата)."""
+    return Panel(
+        Text(text, style=REASONING_STYLE),
+        box=REASONING_BOX,
+        border_style=REASONING_STYLE,
+    )
+
+
+def _message_blocks(message: Message) -> list[RenderableType]:
+    """Реплика без обводки: пользователь — тёмно-серый бабл, ассистент — текст.
+
+    Роли не подписываются — различаются фоном бабла. После бабла пользователя
+    идёт пустая строка-отступ. У ассистента сначала идёт полный текст
+    размышлений (thinking-модели) цитатой с серой полосой, затем пустая
+    строка и белый ответ.
+    """
+    if message.role == Role.USER:
+        body = Text(message.content) if message.content else Text("(пусто)", style="dim")
+        return [Panel(body, box=BUBBLE_BOX, style=f"on {USER_BUBBLE_BG}"), Text("")]
+    blocks: list[RenderableType] = []
+    if message.reasoning:
+        blocks.append(_reasoning_block(message.reasoning))
+        blocks.append(Text(""))
+    if message.content:
+        blocks.append(Text(message.content, style=ANSWER_STYLE))
+    elif message.tool_calls:
+        names = ", ".join(tc.function.name or tc.id or "?" for tc in message.tool_calls)
+        blocks.append(Text(f"[tool_calls] {names}", style="dim italic"))
+    elif not message.reasoning:
+        blocks.append(Text("(пусто)", style="dim"))
+    return blocks
 
 
 class MessageList(ScrollView):
@@ -74,6 +116,7 @@ class MessageList(ScrollView):
     MessageList {
         height: 1fr;
         overflow-y: auto;
+        overflow-x: hidden;
         padding: 0 1;
     }
     """
@@ -148,61 +191,27 @@ class MessageList(ScrollView):
         for index, message in enumerate(history):
             for note in notes_at.get(index, []):
                 blocks.append(_note_panel(note))
-            title = _ROLE_TITLES.get(message.role.value, message.role.value)
-            color = _ROLE_COLORS.get(message.role.value, "dim")
-            if message.content:
-                body: Text = Text(message.content)
-            elif message.tool_calls:
-                names = ", ".join(tc.function.name or tc.id or "?" for tc in message.tool_calls)
-                body = Text(f"[tool_calls] {names}", style="dim italic")
-            else:
-                body = Text("(пусто)", style="dim")
-            blocks.append(Panel(body, title=title, border_style=color))
+            blocks.extend(_message_blocks(message))
             if message.role == Role.ASSISTANT and (u := agent.message_usage.get(index)) is not None:
-                blocks.append(_tokens_line(u.prompt_tokens, u.completion_tokens, u.estimated))
+                blocks.extend(_tokens_block(u.prompt_tokens, u.completion_tokens, u.estimated))
 
         if agent.is_streaming:
-            title = _ROLE_TITLES["assistant"]
-            color = _ROLE_COLORS["assistant"]
             if agent.is_compacting:
                 # (во время LLM-вызова суммаризации — «сжимаю контекст…»)
-                blocks.append(
-                    Panel(
-                        Spinner("dots", text=Text("сжимаю контекст…", style="dim")),
-                        title=f"{title} …",
-                        border_style=color,
-                    )
-                )
+                blocks.append(Spinner("dots", text=Text("сжимаю контекст…", style="dim")))
             elif agent.streaming_reasoning and not agent.streaming_text:
-                # thinking-модель стримит размышления — показываем их хвост
-                tail = agent.streaming_reasoning[-_REASONING_TAIL_CHARS:]
-                if len(agent.streaming_reasoning) > _REASONING_TAIL_CHARS:
-                    tail = "…" + tail
-                blocks.append(
-                    Panel(
-                        Text(tail + "▌", style="dim"),
-                        title=f"{title} (думаю) …",
-                        border_style=color,
-                    )
-                )
+                # thinking-модель стримит размышления — показываем их целиком, цитатой
+                blocks.append(_reasoning_block(agent.streaming_reasoning + "▌"))
             elif agent.is_thinking:
-                # до первого контента показываем лоадер вместо пустой панели
-                blocks.append(
-                    Panel(
-                        Spinner("dots", text=Text("думаю…", style="dim")),
-                        title=f"{title} …",
-                        border_style=color,
-                    )
-                )
+                # до первого контента показываем лоадер
+                blocks.append(Spinner("dots", text=Text("думаю…", style="dim")))
             else:
                 stream = agent.streaming_text or " "
                 tcs = agent.streaming_tool_calls
                 names = ", ".join(t.function.name or "?" for t in tcs)
                 extra = f"  [tool_calls: {names}]" if tcs else ""
-                blocks.append(
-                    Panel(Text(stream + "▌" + extra), title=f"{title} …", border_style=color)
-                )
-                blocks.append(_tokens_line(0, agent.streaming_out_estimate, estimated=True))
+                blocks.append(Text(stream + "▌" + extra, style=ANSWER_STYLE))
+                blocks.extend(_tokens_block(0, agent.streaming_out_estimate, estimated=True))
 
         # хвост: заметки, случившиеся после последнего сообщения (и при пустой истории)
         for note in notes_at.get(len(history), []):

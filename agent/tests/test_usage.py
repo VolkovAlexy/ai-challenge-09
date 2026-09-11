@@ -16,7 +16,8 @@ from my_agent.llm import client as llm_client_module
 from my_agent.llm.client import LLMClient, LLMError
 from my_agent.memory.session import SessionData
 from my_agent.ui.app import ChatTab
-from my_agent.ui.widgets.message_list import MessageList
+from my_agent.ui.colors import ANSWER_STYLE, REASONING_STYLE, TOKENS_STYLE, USER_BUBBLE_BG
+from my_agent.ui.widgets.message_list import BUBBLE_BOX, REASONING_BOX, MessageList
 from my_agent.ui.widgets.status_bar import StatusBar, context_part, totals_part
 
 
@@ -695,7 +696,7 @@ def test_tokens_line_under_assistant_message() -> None:
     rendered = MessageList(ChatTab(agent=agent)).render()
     assert isinstance(rendered, Group)
     texts = [b for b in rendered.renderables if isinstance(b, Text)]
-    assert any(t.plain.strip() == "tokens: in 100 · out 50" for t in texts)
+    assert any(t.plain.strip() == "◈ tokens: in 100 · out 50" for t in texts)
 
 
 def test_warning_note_rendered_yellow_bubble() -> None:
@@ -724,8 +725,8 @@ def test_note_anchored_in_chat_timeline() -> None:
     assert isinstance(rendered, Group)
     order: list[str] = []
     for block in rendered.renderables:
-        if isinstance(block, Panel) and block.title == "вы":
-            order.append("message")
+        if isinstance(block, Panel) and block.title is None:
+            order.append("message")  # реплики — баблы без заголовка
         elif isinstance(block, Panel) and block.title == "инфо":
             order.append("note")
     assert order == ["message", "note", "message"]
@@ -760,7 +761,7 @@ def test_estimated_tokens_line_under_assistant_message() -> None:
     assert isinstance(rendered, Group)
     texts = [b for b in rendered.renderables if isinstance(b, Text)]
     expected = (
-        f"tokens: in ~{agent.last_usage.prompt_tokens}"
+        f"◈ tokens: in ~{agent.last_usage.prompt_tokens}"
         f" · out ~{len('Привет мир') // 4}"
     )
     assert any(t.plain.strip() == expected for t in texts)
@@ -776,11 +777,27 @@ def test_streaming_tokens_line_shows_only_out() -> None:
         rendered = MessageList(ChatTab(agent=agent)).render()
         assert isinstance(rendered, Group)
         texts = [b for b in rendered.renderables if isinstance(b, Text)]
-        expected = f"tokens: out ~{len('x' * 40) // 4}"
+        expected = f"◈ tokens: out ~{len('x' * 40) // 4}"
         assert any(t.plain.strip() == expected for t in texts)
         await task
 
     asyncio.run(scenario())
+
+
+def test_tokens_line_left_with_icon_and_separator() -> None:
+    """Строка tokens слева с иконкой ◈ и отделена от реплики пустой строкой."""
+    agent, _ = make_agent([ChatChunk(content="Привет мир")])
+    asyncio.run(agent.ask("hi"))
+    rendered = MessageList(ChatTab(agent=agent)).render()
+    assert isinstance(rendered, Group)
+    items = rendered.renderables
+    idx = next(
+        i
+        for i, b in enumerate(items)
+        if isinstance(b, Text) and b.plain.startswith("  ◈ tokens:")
+    )
+    assert items[idx].style == TOKENS_STYLE
+    assert isinstance(items[idx - 1], Text) and items[idx - 1].plain == ""
 
 
 def test_thinking_loader_before_first_chunk() -> None:
@@ -791,12 +808,92 @@ def test_thinking_loader_before_first_chunk() -> None:
         await asyncio.sleep(0.02)  # до первого чанка
         rendered = MessageList(ChatTab(agent=agent)).render()
         assert isinstance(rendered, Group)
-        spinners = [
-            b.renderable for b in rendered.renderables if isinstance(b, Panel)
-        ]
-        spinners = [s for s in spinners if isinstance(s, Spinner)]
+        spinners = [b for b in rendered.renderables if isinstance(b, Spinner)]
         assert spinners, "лоадер «думаю…» должен быть виден до первого контента"
         assert "думаю" in spinners[0].text.plain
+        await task
+
+    asyncio.run(scenario())
+
+
+def test_user_message_rendered_as_gray_bubble() -> None:
+    """Реплика пользователя — бабл без обводки на тёмно-сером фоне (box=EMPTY)."""
+    agent, _ = make_agent([ChatChunk(content="ok")])
+    asyncio.run(agent.ask("привет"))
+    rendered = MessageList(ChatTab(agent=agent)).render()
+    assert isinstance(rendered, Group)
+    bubbles = [
+        b
+        for b in rendered.renderables
+        if isinstance(b, Panel) and b.box == BUBBLE_BOX and b.title is None
+    ]
+    assert any(
+        "привет" in b.renderable.plain and b.style == f"on {USER_BUBBLE_BG}" for b in bubbles
+    )
+
+
+def test_assistant_message_rendered_white_without_border() -> None:
+    """Ответ ассистента — белый текст без обводки (Panel у реплики больше нет)."""
+    agent, _ = make_agent([ChatChunk(content="ответ ассистента")])
+    asyncio.run(agent.ask("hi"))
+    rendered = MessageList(ChatTab(agent=agent)).render()
+    assert isinstance(rendered, Group)
+    texts = [b for b in rendered.renderables if isinstance(b, Text)]
+    answers = [t for t in texts if t.plain == "ответ ассистента" and t.style == ANSWER_STYLE]
+    assert answers
+    assert not any(
+        isinstance(b, Panel) and "ответ ассистента" in b.renderable.plain
+        for b in rendered.renderables
+    )
+
+
+def test_reasoning_rendered_full_and_gray_after_ask() -> None:
+    """После хода размышления видны целиком цитатой (серым) перед ответом — без обрезки «…»."""
+    long_reasoning = "мысли " * 200  # раньше показывался только хвост 600 символов
+    chunks = [
+        ChatChunk(reasoning=long_reasoning),
+        ChatChunk(content="итог"),
+        ChatChunk(finish_reason="stop"),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("hi"))
+    rendered = MessageList(ChatTab(agent=agent)).render()
+    assert isinstance(rendered, Group)
+    quotes = [
+        b for b in rendered.renderables if isinstance(b, Panel) and b.box == REASONING_BOX
+    ]
+    assert any(
+        isinstance(q.renderable, Text)
+        and q.renderable.style == REASONING_STYLE
+        and long_reasoning in q.renderable.plain
+        and "…" not in q.renderable.plain[:1]
+        for q in quotes
+    )
+    texts = [b for b in rendered.renderables if isinstance(b, Text)]
+    assert any(t.plain == "итог" and t.style == ANSWER_STYLE for t in texts)
+
+
+def test_streaming_reasoning_shown_in_full() -> None:
+    """Во время стрима размышления показываются полностью, цитатой, с курсором."""
+    long_reasoning = "мысли " * 200
+    agent, _ = make_agent(
+        [ChatChunk(reasoning=long_reasoning), ChatChunk(content="итог")], delay=0.05
+    )
+
+    async def scenario() -> None:
+        task = agent.start_ask("hi")
+        await asyncio.sleep(0.07)  # reasoning доставлен, контент ещё нет
+        rendered = MessageList(ChatTab(agent=agent)).render()
+        assert isinstance(rendered, Group)
+        quotes = [
+            b for b in rendered.renderables if isinstance(b, Panel) and b.box == REASONING_BOX
+        ]
+        assert any(
+            isinstance(q.renderable, Text)
+            and q.renderable.plain == long_reasoning + "▌"
+            and q.renderable.style == REASONING_STYLE
+            for q in quotes
+        )
         await task
 
     asyncio.run(scenario())
