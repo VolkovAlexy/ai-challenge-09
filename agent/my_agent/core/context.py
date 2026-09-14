@@ -1,8 +1,9 @@
 """ContextBuilder — единственная точка, где собирается массив messages.
 
-Сейчас: системный промпт + (саммари сжатой истории) + история. RAG-чанки и
-долгосрочные памяти — задел: при передаче `rag_chunks`/`memories` они
-добавляются контекстом до истории; при реализации эти ветки не потребуют
+Сейчас: системный промпт + (facts, саммари сжатой истории) + история
+(для стратегий sliding/facts история урезается скользящим окном).
+RAG-чанки и долгосрочные памяти — задел: при передаче `rag_chunks`/`memories`
+они добавляются контекстом до истории; при реализации эти ветки не потребуют
 изменений в agent.py.
 
 Здесь же — общая оценка токенов (chars/4), используемая агентом и
@@ -18,6 +19,7 @@ from my_agent.core.message import Message, Role
 RAG_HEADER = "Контекст из внешних источников (RAG):"
 MEMORY_HEADER = "Долгосрочные воспоминания:"
 SUMMARY_HEADER = "Сводка ранее в диалоге:"
+FACTS_HEADER = "Важные факты диалога (ключ: значение):"
 
 CHARS_PER_TOKEN = 4  # грубая оценка: для русского занижает в ~1.5–2 раза
 
@@ -43,6 +45,16 @@ def fmt_tokens(n: int) -> str:
     return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
 
 
+def apply_sliding_window(history: list[Message], n: int) -> list[Message]:
+    """Стратегия sliding window: только последние n сообщений.
+
+    Полная история агента не меняется — окно режет только проекцию для LLM.
+    """
+    if n <= 0 or len(history) <= n:
+        return list(history)
+    return list(history[-n:])
+
+
 class ContextBuilder:
     """Собирает финальный массив сообщений для запроса к LLM."""
 
@@ -51,11 +63,15 @@ class ContextBuilder:
         system_prompt: str,
         history: list[Message],
         summary: str | None = None,
+        facts: dict[str, str] | None = None,
         rag_chunks: list[str] | None = None,
         memories: list[str] | None = None,
     ) -> list[Message]:
-        """system_prompt → (+саммари, +RAG, +memories как служебные сообщения) → история."""
+        """system_prompt → (+facts, +саммари, +RAG, +memories служебными сообщениями) → история."""
         messages = [Message(role=Role.SYSTEM, content=system_prompt)]
+        if facts:
+            lines = "\n".join(f"- {key}: {value}" for key, value in sorted(facts.items()))
+            messages.append(Message(role=Role.SYSTEM, content=FACTS_HEADER + "\n" + lines))
         if summary:
             messages.append(Message(role=Role.SYSTEM, content=SUMMARY_HEADER + "\n" + summary))
         if rag_chunks:

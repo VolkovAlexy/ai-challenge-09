@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from uuid import uuid4
 
 from my_agent.config.schema import AgentSettings
 from my_agent.core.message import Message
+from my_agent.memory.branching import DEFAULT_BRANCH, BranchState
 from my_agent.memory.session import SessionData, save_session
 
 _SCHEMA = """
@@ -42,6 +44,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions (updated_at);
 _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN compacted_upto INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE sessions ADD COLUMN facts TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE sessions ADD COLUMN active_branch TEXT NOT NULL DEFAULT 'main'",
+    "ALTER TABLE sessions ADD COLUMN branches_json TEXT NOT NULL DEFAULT '[]'",
 ]
 
 
@@ -95,24 +100,45 @@ class SessionStore:
         history: list[Message],
         summary: str | None = None,
         compacted_upto: int = 0,
+        facts: dict[str, str] | None = None,
+        active_branch: str = DEFAULT_BRANCH,
+        branches: dict[str, BranchState] | None = None,
     ) -> None:
-        """Атомарный upsert-снапшот: метаданные + полная замена истории."""
+        """Атомарный upsert-снапшот: метаданные + полная замена истории.
+
+        `history` — история активной ветки; `branches` — неактивные ветки
+        (целиком, со своей историей), сериализуются в branches_json.
+        """
         now = _now()
         settings_json = settings.model_dump_json()
         rows = [(session_id, seq, message.model_dump_json()) for seq, message in enumerate(history)]
+        inactive = [
+            {
+                "name": branch_name,
+                "summary": state.summary,
+                "compacted_upto": state.compacted_upto,
+                "facts": state.facts,
+                "history": [message.model_dump() for message in state.history],
+            }
+            for branch_name, state in (branches or {}).items()
+            if branch_name != active_branch
+        ]
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO sessions
                     (id, name, system_prompt, settings_json, summary, compacted_upto,
-                     created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     facts, active_branch, branches_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (id) DO UPDATE SET
                     name = excluded.name,
                     system_prompt = excluded.system_prompt,
                     settings_json = excluded.settings_json,
                     summary = excluded.summary,
                     compacted_upto = excluded.compacted_upto,
+                    facts = excluded.facts,
+                    active_branch = excluded.active_branch,
+                    branches_json = excluded.branches_json,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -122,6 +148,9 @@ class SessionStore:
                     settings_json,
                     summary or "",
                     compacted_upto,
+                    json.dumps(facts or {}, ensure_ascii=False),
+                    active_branch,
+                    json.dumps(inactive, ensure_ascii=False),
                     now,
                     now,
                 ),
@@ -162,10 +191,11 @@ class SessionStore:
         return [SessionInfo(id=r[0], title=_shorten(r[1]), updated_at=r[2]) for r in rows]
 
     def get(self, session_id: str) -> SessionData | None:
-        """Полное состояние сессии; None, если её нет."""
+        """Полное состояние сессии (включая неактивные ветки); None, если её нет."""
         row = self._conn.execute(
             """
-            SELECT name, system_prompt, settings_json, summary, compacted_upto
+            SELECT name, system_prompt, settings_json, summary, compacted_upto,
+                   facts, active_branch, branches_json
             FROM sessions WHERE id = ?
             """,
             (session_id,),
@@ -178,12 +208,27 @@ class SessionStore:
             (session_id,),
         ).fetchall()
         history = [Message.model_validate_json(r[0]) for r in message_rows]
+        active = row[6] or DEFAULT_BRANCH
+        branches: dict[str, BranchState] = {}
+        for state in json.loads(row[7] or "[]"):
+            branch_name = str(state.get("name", "")).strip()
+            if not branch_name or branch_name == active:
+                continue
+            branches[branch_name] = BranchState(
+                history=[Message.model_validate(m) for m in state.get("history", [])],
+                summary=state.get("summary"),
+                compacted_upto=int(state.get("compacted_upto", 0)),
+                facts={str(k): str(v) for k, v in state.get("facts", {}).items()},
+            )
         return SessionData(
             settings=settings,
             system_prompt=row[1],
             name=row[0],
             summary=row[3] or None,
             compacted_upto=int(row[4] or 0),
+            facts={str(k): str(v) for k, v in json.loads(row[5] or "{}").items()},
+            active_branch=active,
+            branches=branches,
             history=history,
         )
 
@@ -206,6 +251,9 @@ class SessionStore:
             summary=data.summary,
             compacted_upto=data.compacted_upto,
             history=data.history,
+            facts=data.facts,
+            active_branch=data.active_branch,
+            branches=data.branches,
         )
 
     def count(self) -> int:

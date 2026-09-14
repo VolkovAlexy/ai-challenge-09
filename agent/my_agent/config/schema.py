@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_core import ErrorDetails
+
+ContextStrategy = Literal["none", "summary", "sliding", "facts"]
+"""Стратегия управления контекстом (проекцией истории для LLM).
+
+- none — вся история без управления;
+- summary — автокомпакция: старейший префикс сжимается в саммари;
+- sliding — только последние N сообщений (sliding_window);
+- facts — facts-блок (ключ-значение) + последние N сообщений.
+"""
 
 
 class Provider(BaseModel):
@@ -60,6 +69,15 @@ class Config(BaseModel):
         ge=0.5,
         le=1.0,
         description="Доля заполнения окна, при которой история сжимается в саммари",
+    )
+    context_strategy: ContextStrategy = Field(
+        default="summary",
+        description="Стратегия контекста для новых агентов (none/summary/sliding/facts)",
+    )
+    sliding_window: int = Field(
+        default=20,
+        gt=0,
+        description="Размер скользящего окна в сообщениях (стратегии sliding/facts)",
     )
 
     @model_validator(mode="after")
@@ -140,6 +158,8 @@ class AgentSettings(BaseModel):
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     max_tokens: int = Field(default=4096, gt=0)
     stop: list[str] = Field(default_factory=list)
+    context_strategy: ContextStrategy = Field(default="summary")
+    sliding_window: int = Field(default=20, gt=0)
 
     @classmethod
     def from_config(cls, config: Config) -> AgentSettings:
@@ -150,4 +170,6 @@ class AgentSettings(BaseModel):
             top_p=config.top_p,
             max_tokens=config.max_tokens,
             stop=list(config.stop),
+            context_strategy=config.context_strategy,
+            sliding_window=config.sliding_window,
         )

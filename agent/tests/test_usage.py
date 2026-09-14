@@ -18,7 +18,7 @@ from my_agent.memory.session import SessionData
 from my_agent.ui.app import ChatTab
 from my_agent.ui.colors import ANSWER_STYLE, REASONING_STYLE, TOKENS_STYLE, USER_BUBBLE_BG
 from my_agent.ui.widgets.message_list import BUBBLE_BOX, REASONING_BOX, MessageList
-from my_agent.ui.widgets.status_bar import StatusBar, context_part, totals_part
+from my_agent.ui.widgets.status_bar import StatusBar, context_part, strategy_part, totals_part
 
 
 class MockLLM:
@@ -590,6 +590,30 @@ def test_apply_session_resets_usage() -> None:
 
 
 # --- StatusBar ---
+
+
+def test_strategy_part_all_modes() -> None:
+    agent, _ = make_agent([])
+    assert strategy_part(agent).plain == "ctx strategy:summary"
+
+    agent.settings.context_strategy = "none"
+    assert strategy_part(agent).plain == "ctx strategy:none"
+
+    agent.settings.context_strategy = "sliding"
+    agent.settings.sliding_window = 5
+    assert strategy_part(agent).plain == "ctx strategy:sliding·w5"
+
+    agent.settings.context_strategy = "facts"
+    assert strategy_part(agent).plain == "ctx strategy:facts·w5"
+
+
+def test_status_bar_shows_strategy_and_drops_model_params() -> None:
+    agent, _ = make_agent([])
+    rendered = StatusBar(ChatTab(agent=agent)).render()
+    assert "ctx strategy:summary" in rendered.plain
+    assert "temp " not in rendered.plain
+    assert "top_p " not in rendered.plain
+    assert "max " not in rendered.plain
 
 
 def test_fmt_tokens() -> None:

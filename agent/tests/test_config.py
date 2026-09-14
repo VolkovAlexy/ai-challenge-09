@@ -105,6 +105,22 @@ def test_agent_settings_from_config() -> None:
     assert AgentSettings.from_config(cfg).temperature == 0.7
 
 
+def test_context_strategy_defaults_and_validation() -> None:
+    cfg = validate_config(valid_dict())
+    assert cfg.context_strategy == "summary"  # дефолт — текущее поведение
+    assert cfg.sliding_window == 20
+    assert validate_config({**valid_dict(), "context_strategy": "facts"}).context_strategy == (
+        "facts"
+    )
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "context_strategy": "magic"})
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "sliding_window": 0})
+    settings = AgentSettings.from_config(cfg)
+    assert settings.context_strategy == "summary"
+    assert settings.sliding_window == 20
+
+
 def test_load_config_creates_default(tmp_path) -> None:
     path = tmp_path / "config.json"
     cfg = load_config(path)

@@ -14,7 +14,13 @@ from pathlib import Path
 
 from my_agent.config.schema import AgentSettings, Config, Provider
 from my_agent.core.compactor import CompactionResult, ContextCompactor
-from my_agent.core.context import ContextBuilder, estimate_messages, estimate_text, fmt_tokens
+from my_agent.core.context import (
+    ContextBuilder,
+    apply_sliding_window,
+    estimate_messages,
+    estimate_text,
+    fmt_tokens,
+)
 from my_agent.core.message import (
     ChatChunk,
     ChatRequest,
@@ -25,6 +31,7 @@ from my_agent.core.message import (
     Usage,
 )
 from my_agent.llm.client import LLMClient, LLMError
+from my_agent.memory.facts import FactsExtractor
 from my_agent.memory.session import InMemorySession, SessionData, save_session
 from my_agent.tools.registry import ToolRegistry
 
@@ -108,6 +115,7 @@ class Agent:
         self._compactor = ContextCompactor(llm)
         self._needs_compaction = False  # прошлый ход обрезан сервером — сжать принудительно
         self.is_compacting = False  # сейчас идёт LLM-вызов суммаризации (читает UI)
+        self.is_extracting_facts = False  # сейчас идёт LLM-вызов обновления facts (читает UI)
         # наблюдаемое отношение «токены API / локальная оценка chars/4» (1.0–4.0):
         # локальная оценка занижает для русского — масштабируем ею компактор
         self._token_ratio: float | None = None
@@ -115,6 +123,11 @@ class Agent:
         self.compaction_note: str | None = None
         # подписка UI: вызывается сразу после успешного сжатия, до ответа модели
         self.on_compaction: Callable[[str], None] | None = None
+        # --- facts (стратегия facts) ---
+        self._facts_extractor = FactsExtractor(llm)
+        self.facts_note: str | None = None
+        # подписка UI: вызывается сразу после обновления facts, до ответа модели
+        self.on_facts: Callable[[str], None] | None = None
         # --- токены (только рантайм, в сессии не сохраняются) ---
         self.last_usage: TokenUsage | None = None
         # индекс assistant-сообщения в истории → токены его хода
@@ -196,15 +209,27 @@ class Agent:
         return estimate_messages(self._projection()), True
 
     def _projection(self) -> list[Message]:
-        """Сообщения для LLM: system → саммари сжатого префикса → несжатый хвост.
+        """Сообщения для LLM — согласно стратегии контекста.
 
-        История агента хранится целиком (чат не меняется), в запрос уходит
-        только проекция через ContextBuilder.
+        none — вся история как есть; summary — саммари сжатого префикса +
+        несжатый хвост; sliding — последние N сообщений; facts — facts-блок +
+        последние N сообщений. История агента хранится целиком (чат не
+        меняется), в запрос уходит только проекция через ContextBuilder.
         """
+        strategy = self.settings.context_strategy
+        if strategy == "none":
+            return self.context_builder.build_messages(self.system_prompt, self.memory.history)
+        if strategy == "summary":
+            return self.context_builder.build_messages(
+                self.system_prompt,
+                self.memory.tail,
+                summary=self.memory.summary,
+            )
+        # sliding / facts: скользящее окно по полной истории
         return self.context_builder.build_messages(
             self.system_prompt,
-            self.memory.tail,
-            summary=self.memory.summary,
+            apply_sliding_window(self.memory.history, self.settings.sliding_window),
+            facts=self.memory.facts or None if strategy == "facts" else None,
         )
 
     def _projected_tokens(self) -> int:
@@ -261,6 +286,7 @@ class Agent:
         on_compaction (UI показывает её до ответа модели).
         """
         self.compaction_note = None
+        self.facts_note = None
         self.memory.add(Message(role=Role.USER, content=text))
         self._stream_text = ""
         self._stream_reasoning = ""
@@ -271,6 +297,8 @@ class Agent:
         messages: list[Message] = []
         try:
             provider, model = self._config.resolve_model(self.settings.model)
+            if self.settings.context_strategy == "facts":
+                await self._update_facts(provider, model)
             await self._maybe_compact(provider, model)
             messages = self._projection()
             # живая оценка контекста — видна в статус-баре ещё до ответа API
@@ -380,14 +408,19 @@ class Agent:
     async def _maybe_compact(self, provider: Provider, model: str) -> None:
         """Сжимает префикс истории в саммари, если контекст переполнен.
 
-        Триггеры: заполнение доли окна (compaction_threshold) — по точному
-        usage API, когда он есть (локальная оценка chars/4 занижает для
-        русского, а статус-бар показывает точные числа), либо обрезка
-        контекста сервером на прошлом ходу. Чат не меняется: сообщения
-        остаются в истории, для LLM сжатый префикс заменяется саммари.
-        Пользователь видит это по заметке compaction_note (UI выводит сразу
-        после сжатия, до ответа модели, через колбэк on_compaction).
+        Работает только в стратегии summary (в sliding/facts окно само
+        ограничивает проекцию, в none — сжатия нет вовсе). Триггеры:
+        заполнение доли окна (compaction_threshold) — по точному usage API,
+        когда он есть (локальная оценка chars/4 занижает для русского, а
+        статус-бар показывает точные числа), либо обрезка контекста сервером
+        на прошлом ходу. Чат не меняется: сообщения остаются в истории, для
+        LLM сжатый префикс заменяется саммари. Пользователь видит это по
+        заметке compaction_note (UI выводит сразу после сжатия, до ответа
+        модели, через колбэк on_compaction).
         """
+        if self.settings.context_strategy != "summary":
+            self._needs_compaction = False
+            return
         window = self.context_window
         threshold = self._config.compaction_threshold
         share = self._projected_tokens() / window if window > 0 else 1.0
@@ -433,6 +466,45 @@ class Agent:
             # и будущим ответом. Даже если ход после сжатия упадёт — она уже видна.
             self.on_compaction(self.compaction_note)
 
+    async def _update_facts(self, provider: Provider, model: str) -> None:
+        """Обновляет facts после сообщения пользователя (стратегия facts).
+
+        Один LLM-вызов: текущие facts + недавний хвост диалога → обновлённый
+        JSON. При ошибке старые facts сохраняются, чат продолжается (заметка
+        — в self.facts_note и колбэку on_facts). Расход вызова попадает в
+        накопительные счётчики сессии.
+        """
+        self.is_extracting_facts = True
+        try:
+            result = await self._facts_extractor.update(
+                model=model,
+                api_base=provider.api_base,
+                api_key=provider.api_key,
+                facts=self.memory.facts,
+                history=self.memory.tail,
+            )
+        except LLMError as exc:
+            self.facts_note = f"Не удалось обновить facts: {exc}"
+            if self.on_facts is not None:
+                self.on_facts(self.facts_note)
+            return
+        finally:
+            self.is_extracting_facts = False
+        changed = result.facts != self.memory.facts
+        self.memory.facts = result.facts
+        self.totals.in_tokens += result.in_tokens
+        self.totals.out_tokens += result.out_tokens
+        if result.estimated:
+            self.totals.estimated = True
+        if changed:
+            self.facts_note = (
+                "Facts обновлены: " + ", ".join(sorted(result.facts))
+                if result.facts
+                else "Facts очищены."
+            )
+            if self.on_facts is not None:
+                self.on_facts(self.facts_note)
+
     def _accumulate_tool_calls(self, chunk: ChatChunk) -> None:
         """Накопительный разбор tool_calls в стриме (дальше — задел под ToolRegistry)."""
         for delta in chunk.tool_call_deltas:
@@ -450,7 +522,7 @@ class Agent:
     # --- сессии ---
 
     def export(self, path: str | Path) -> Path:
-        """Экспортирует сессию (полная история + саммари + настройки) в jsonl-файл."""
+        """Экспортирует сессию (все ветки + facts + настройки) в jsonl-файл."""
         return save_session(
             path,
             settings=self.settings,
@@ -459,6 +531,9 @@ class Agent:
             summary=self.memory.summary,
             compacted_upto=self.memory.compacted_upto,
             history=self.memory.history,
+            facts=self.memory.facts,
+            active_branch=self.memory.active_branch,
+            branches=self.memory.branches,
         )
 
     def apply_session(self, data: SessionData) -> None:
@@ -469,12 +544,37 @@ class Agent:
         self.memory.clear(summary=data.summary, compacted_upto=data.compacted_upto)
         for message in data.history:
             self.memory.add(message)
+        self.memory.facts = dict(data.facts)
+        self.memory.restore_branches(data.branches, active=data.active_branch)
+        self._reset_runtime()
+
+    # --- ветки диалога ---
+
+    def fork_branch(self, name: str) -> str:
+        """Создаёт ветку-копию текущего диалога и переключается на неё.
+
+        Возвращает имя прежней активной ветки. ValueError — имя занято;
+        вызывать только вне активного запроса.
+        """
+        previous = self.memory.active_branch
+        self.memory.fork(name)
+        self._reset_runtime()
+        return previous
+
+    def switch_branch(self, name: str) -> None:
+        """Переключается на сохранённую ветку. KeyError — ветки нет."""
+        self.memory.switch(name)
+        self._reset_runtime()
+
+    def _reset_runtime(self) -> None:
+        """Сброс рантайм-состояния после смены состояния диалога (ветка/сессия)."""
         self.last_usage = None
         self.message_usage = {}
         self.reset_totals()
         self._needs_compaction = False
         self._token_ratio = None
         self.compaction_note = None
+        self.facts_note = None
 
     def request_compaction(self) -> None:
         """Форсирует сжатие префикса истории при следующем ходе (команда /compact)."""

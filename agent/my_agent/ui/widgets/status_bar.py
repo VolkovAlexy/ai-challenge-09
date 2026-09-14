@@ -1,4 +1,4 @@
-"""StatusBar: имя агента, provider:model, temperature/top_p/max_tokens, context, «не сохранено»."""
+"""StatusBar: имя агента, provider:model, стратегия контекста, context, «не сохранено»."""
 
 from __future__ import annotations
 
@@ -57,6 +57,31 @@ def totals_part(agent: Agent) -> Text:
     )
 
 
+def strategy_part(agent: Agent) -> Text:
+    """«ctx strategy:<режим>» — активная стратегия контекста, видна всегда.
+
+    summary — dim (дефолт), none — жёлтый (напоминание, что история уходит
+    в LLM целиком), sliding — cyan, facts — magenta; в sliding/facts
+    после имени показывается размер окна: «ctx strategy:sliding·w20».
+    """
+    strategy = agent.settings.context_strategy
+    if strategy == "none":
+        return Text("ctx strategy:none", style="yellow")
+    if strategy == "facts":
+        return Text(f"ctx strategy:facts·w{agent.settings.sliding_window}", style="magenta")
+    if strategy == "sliding":
+        return Text(f"ctx strategy:sliding·w{agent.settings.sliding_window}", style="cyan")
+    return Text("ctx strategy:summary", style="dim")
+
+
+def branch_part(agent: Agent) -> Text | None:
+    """«⎇ ветка» — только когда веток больше одной (иначе это шум)."""
+    names = agent.memory.branch_names()
+    if len(names) <= 1:
+        return None
+    return Text(f"⎇ {agent.memory.active_branch}", style="green")
+
+
 class StatusBar(Widget):
     DEFAULT_CSS = """
     StatusBar {
@@ -76,14 +101,15 @@ class StatusBar(Widget):
         parts = [
             Text(agent.name, style="bold"),
             Text(s.model + (" •" if agent.settings_dirty else ""), style="bold yellow"),
-            Text(f"temp {s.temperature:g}"),
-            Text(f"top_p {s.top_p:g}"),
-            Text(f"max {s.max_tokens}"),
+            strategy_part(agent),
         ]
         context = context_part(agent)
         if context is not None:
             parts.append(context)
         parts.append(totals_part(agent))
+        branch = branch_part(agent)
+        if branch is not None:
+            parts.append(branch)
         if s.stop:
             parts.append(Text("stop: " + ", ".join(s.stop)))
         text = Text()

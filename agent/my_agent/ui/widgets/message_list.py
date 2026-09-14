@@ -48,6 +48,7 @@ _NOTE_STYLES = {
     "system": ("инфо", "orange1", "ℹ"),
     "warning": ("внимание", "yellow", "⚠"),
     "compact": ("сжатие", "cyan", "⇄"),
+    "facts": ("facts", "magenta", "🗂"),
 }
 
 
@@ -224,6 +225,9 @@ class MessageList(ScrollView):
             if agent.is_compacting:
                 # (во время LLM-вызова суммаризации — «сжимаю контекст…»)
                 blocks.append(Spinner("dots", text=Text("сжимаю контекст…", style="dim")))
+            elif agent.is_extracting_facts:
+                # (во время LLM-вызова обновления facts — «обновляю facts…»)
+                blocks.append(Spinner("dots", text=Text("обновляю facts…", style="dim")))
             elif agent.streaming_reasoning and not agent.streaming_text:
                 # thinking-модель стримит размышления — показываем их целиком, цитатой
                 blocks.append(_reasoning_block(agent.streaming_reasoning + "▌"))

@@ -12,10 +12,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from my_agent.config.schema import Config
+from my_agent.config.schema import Config, ContextStrategy
 from my_agent.core.agent import Agent
+from my_agent.memory.branching import normalize_branch_name
 
 SESSIONS_DIR = Path("sessions")
+
+STRATEGIES: tuple[ContextStrategy, ...] = ("none", "summary", "sliding", "facts")
+
+STRATEGY_DESCRIPTIONS: dict[ContextStrategy, str] = {
+    "none": "вся история без управления контекстом",
+    "summary": "автокомпакция: старейший префикс сжимается в саммари",
+    "sliding": "последние N сообщений (размер — /window)",
+    "facts": "facts-блок + последние N сообщений (/facts, /window)",
+}
 
 
 class AppLike(Protocol):
@@ -34,6 +44,10 @@ class AppLike(Protocol):
     def config(self) -> Config: ...
 
     def open_session_palette(self) -> None: ...
+
+    def open_strategy_palette(self) -> None: ...
+
+    def persist_active(self) -> None: ...
 
 
 @dataclass
@@ -123,6 +137,18 @@ def _require_agent(ctx: CommandContext) -> Agent | None:
 
 def _model_ids(ctx: CommandContext) -> list[str]:
     return ctx.app.config().all_model_ids()
+
+
+def strategy_note(agent: Agent, value: ContextStrategy) -> str:
+    """Единый текст подтверждения смены стратегии (команда /strategy и палитра)."""
+    note = f"Стратегия контекста: {value}."
+    if value == "facts":
+        note += " Facts обновляются после каждого сообщения (/facts)."
+    if value in ("sliding", "facts"):
+        note += f" Окно: {agent.settings.sliding_window} сообщ. (/window)."
+    elif value == "none":
+        note += " История уходит в LLM целиком — следите за переполнением окна."
+    return note
 
 
 def default_registry() -> CommandRegistry:
@@ -266,18 +292,131 @@ def default_registry() -> CommandRegistry:
             return "Нет активного агента."
         agent.memory.clear()
         agent.reset_totals()  # счётчики in/out/Σ описывают текущий диалог
-        return "История очищена."
+        return "История активной ветки очищена (facts тоже)."
 
     def _compact(ctx: CommandContext) -> str | None:
         agent = _require_agent(ctx)
         if agent is None:
             return "Нет активного агента."
+        if agent.settings.context_strategy != "summary":
+            return "Команда /compact доступна только в стратегии summary (/strategy summary)."
         if agent.is_streaming:
             return "Агент отвечает — дождитесь завершения запроса."
         if not agent.memory.tail:
             return "История пуста — сжимать нечего."
         agent.request_compaction()
         return "Контекст будет сжат при следующем сообщении."
+
+    def _strategy(ctx: CommandContext) -> str | None:
+        agent = _require_agent(ctx)
+        if agent is None:
+            return "Нет активного агента."
+        if not ctx.args:
+            ctx.app.open_strategy_palette()
+            return None
+        if agent.is_streaming:
+            return "Агент отвечает — дождитесь завершения запроса."
+        value = ctx.args[0].lower()
+        if value not in STRATEGIES:
+            return f"'{ctx.args[0]}' — нет такой стратегии. Доступны: {', '.join(STRATEGIES)}."
+        agent.settings.context_strategy = value
+        return strategy_note(agent, value)
+
+    def _window(ctx: CommandContext) -> str | None:
+        agent = _require_agent(ctx)
+        if agent is None:
+            return "Нет активного агента."
+        if not ctx.args:
+            return (
+                f"Скользящее окно: {agent.settings.sliding_window} сообщ. "
+                "(используется в стратегиях sliding/facts). /window <N> — изменить."
+            )
+        try:
+            value = int(ctx.args[0])
+        except ValueError:
+            return f"'{ctx.args[0]}' — не целое число."
+        if value <= 0:
+            return "N должен быть положительным."
+        agent.settings.sliding_window = value
+        return f"Скользящее окно: {value} сообщ."
+
+    def _facts(ctx: CommandContext) -> str | None:
+        agent = _require_agent(ctx)
+        if agent is None:
+            return "Нет активного агента."
+        facts = agent.memory.facts
+        if not ctx.args:
+            if not facts:
+                return "Facts пусты. /facts <key> <value…> — добавить вручную."
+            lines = [f"Facts ({len(facts)}):"]
+            lines.extend(f"  {key}: {facts[key]}" for key in sorted(facts))
+            if agent.settings.context_strategy != "facts":
+                lines.append("Блок facts уходит в LLM только в стратегии facts (/strategy facts).")
+            return "\n".join(lines)
+        first = ctx.args[0]
+        if first == "clear":
+            facts.clear()
+            return "Facts очищены."
+        if first.startswith("-"):
+            key = first[1:]
+            if key not in facts:
+                return f"Ключ '{key}' не найден."
+            del facts[key]
+            return f"Facts[{key}] удалён."
+        if len(ctx.args) < 2:
+            return "Использование: /facts <key> <value…> | /facts -<key> | /facts clear"
+        facts[first] = " ".join(ctx.args[1:])
+        return f"Facts[{first}] = {facts[first]}"
+
+    def _branch(ctx: CommandContext) -> str | None:
+        agent = _require_agent(ctx)
+        if agent is None:
+            return "Нет активного агента."
+        if not ctx.args:
+            return _branches_list(agent)
+        if agent.is_streaming:
+            return "Агент отвечает — дождитесь завершения запроса."
+        try:
+            name = normalize_branch_name(ctx.args[0])
+        except ValueError as exc:
+            return f"Ошибка: {exc}"
+        try:
+            previous = agent.fork_branch(name)
+        except ValueError as exc:
+            return f"Ошибка: {exc}"
+        ctx.app.persist_active()
+        return f"Чекпоинт: создана ветка '{name}' (копия '{previous}'), переключился на неё."
+
+    def _branches_list(agent: Agent) -> str:
+        info = agent.memory.branch_info()
+        lines = ["Ветки диалога:"]
+        for name, count, active in info:
+            mark = "* " if active else "  "
+            lines.append(f"  {mark}{name} ({count} сообщ.)")
+        if len(info) == 1:
+            lines.append("/branch <name> — создать ветку от текущего места.")
+        else:
+            lines.append("/checkout <name> — переключиться.")
+        return "\n".join(lines)
+
+    def _checkout(ctx: CommandContext) -> str | None:
+        agent = _require_agent(ctx)
+        if agent is None:
+            return "Нет активного агента."
+        if agent.is_streaming:
+            return "Агент отвечает — дождитесь завершения запроса."
+        if not ctx.args:
+            return "Использование: /checkout <имя>"
+        try:
+            name = normalize_branch_name(ctx.args[0])
+        except ValueError as exc:
+            return f"Ошибка: {exc}"
+        try:
+            agent.switch_branch(name)
+        except KeyError:
+            return f"Ветка '{name}' не найдена. /branches — список."
+        ctx.app.persist_active()
+        return f"Переключился на ветку '{name}'."
 
     def _export(ctx: CommandContext) -> str | None:
         agent = _require_agent(ctx)
@@ -323,9 +462,58 @@ def default_registry() -> CommandRegistry:
     )
     registry.register(Command("system", "показать / заменить системный промпт", _system, "[path]"))
     registry.register(Command("history", "показать историю диалога", _history))
-    registry.register(Command("clear", "очистить историю сессии", _clear))
+    registry.register(Command("clear", "очистить историю активной ветки (и facts)", _clear))
+    registry.register(Command("compact", "сжать контекст при следующем сообщении", _compact))
     registry.register(
-        Command("compact", "сжать контекст при следующем сообщении", _compact)
+        Command(
+            "strategy",
+            "стратегия контекста: none/summary/sliding/facts",
+            _strategy,
+            "[none|summary|sliding|facts]",
+            lambda ctx, prefix: [s for s in STRATEGIES if s.startswith(prefix)],
+        )
+    )
+    registry.register(Command("window", "размер скользящего окна (сообщений)", _window, "<n>"))
+    registry.register(
+        Command(
+            "facts",
+            "facts-память: показать / <key> <value…> / -<key> / clear",
+            _facts,
+            "[args]",
+        )
+    )
+    registry.register(
+        Command(
+            "branch",
+            "создать ветку-копию диалога (чекпоинт) и переключиться",
+            _branch,
+            "<name>",
+            lambda ctx, prefix: [
+                n
+                for n in (ctx.agent.memory.branch_names() if ctx.agent else [])
+                if n.startswith(prefix)
+            ],
+        )
+    )
+    registry.register(
+        Command(
+            "branches",
+            "список веток диалога",
+            lambda ctx: _branches_list(ctx.agent) if ctx.agent else "Нет активного агента.",
+        )
+    )
+    registry.register(
+        Command(
+            "checkout",
+            "переключиться на ветку диалога",
+            _checkout,
+            "<name>",
+            lambda ctx, prefix: [
+                n
+                for n in (ctx.agent.memory.branch_names() if ctx.agent else [])
+                if n.startswith(prefix)
+            ],
+        )
     )
     registry.register(
         Command("export", "экспортировать сессию активного агента в jsonl", _export, "[file]")

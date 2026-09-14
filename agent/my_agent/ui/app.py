@@ -20,7 +20,13 @@ from textual.containers import Vertical
 from textual.widget import Widget
 from textual.widgets import TabbedContent, TabPane
 
-from my_agent.commands.registry import CommandContext, CommandRegistry, default_registry
+from my_agent.commands.registry import (
+    STRATEGIES,
+    CommandContext,
+    CommandRegistry,
+    default_registry,
+    strategy_note,
+)
 from my_agent.config.schema import AgentSettings, Config
 from my_agent.core.agent import Agent, AgentBusyError
 from my_agent.llm.client import LLMClient, LLMError
@@ -32,6 +38,7 @@ from my_agent.ui.widgets.message_list import MessageList
 from my_agent.ui.widgets.model_palette import ModelPalette
 from my_agent.ui.widgets.session_palette import SessionPalette
 from my_agent.ui.widgets.status_bar import StatusBar
+from my_agent.ui.widgets.strategy_palette import StrategyPalette
 
 TICK_INTERVAL = 0.1  # ~100 мс — батч перерисовки
 CTRL_C_WINDOW = 3.0  # окно «повторный Ctrl+C — выход»
@@ -202,7 +209,8 @@ class AgentApp(App[None]):
             tools=self._tools,
         )
         tab = ChatTab(agent=agent)
-        agent.on_compaction = lambda note: self._on_compaction(tab, note)
+        agent.on_compaction = lambda note: self._on_agent_note(tab, note, "compact")
+        agent.on_facts = lambda note: self._on_agent_note(tab, note, "facts")
         self._persist_tab(tab)  # выдаёт session_id + начальный (пустой) снапшот
         tab_id = f"agent-{id(agent)}"
         self._tabs.append(tab)
@@ -257,6 +265,29 @@ class AgentApp(App[None]):
             tab.add_note("error", f"Ошибка: {exc}")
             return
         tab.dirty = True  # модель и так видна в статус-баре — заметка не нужна
+
+    def open_strategy_palette(self) -> None:
+        tab = self.active_tab()
+        if tab is None:
+            return
+        self.push_screen(
+            StrategyPalette(tab.agent.settings.context_strategy),
+            lambda value: self._on_strategy_picked(tab, value),
+        )
+
+    def _on_strategy_picked(self, tab: ChatTab, value: str | None) -> None:
+        """Применяет выбранную в палитре стратегию контекста к активному агенту."""
+        if value is None:
+            return
+        agent = tab.agent
+        if agent.is_streaming:
+            tab.add_note("system", "Агент отвечает — дождитесь завершения запроса.")
+            return
+        if value not in STRATEGIES:
+            return
+        agent.settings.context_strategy = value
+        tab.add_note("system", strategy_note(agent, value))
+        tab.dirty = True
 
     def open_session_palette(self) -> None:
         current = self.active_tab()
@@ -333,14 +364,14 @@ class AgentApp(App[None]):
         task.add_done_callback(lambda t: self._on_ask_done(t, tab))
         return True
 
-    def _on_compaction(self, tab: ChatTab, note: str) -> None:
-        """Заметка о сжатии — сразу после суммаризации, до ответа модели.
+    def _on_agent_note(self, tab: ChatTab, note: str, kind: str) -> None:
+        """Заметка от агента (сжатие/ошибка facts) — сразу после события, до ответа модели.
 
         История в этот момент кончается сообщением пользователя, поэтому
         anchor ставит заметку между запросом и будущим ответом. Ход после
-        сжатия может упасть — заметка уже видна.
+        события может упасть — заметка уже видна.
         """
-        tab.add_note("compact", note)
+        tab.add_note(kind, note)
         tab.dirty = True
 
     def _on_ask_done(self, task: asyncio.Task[str], tab: ChatTab) -> None:
@@ -395,7 +426,8 @@ class AgentApp(App[None]):
     def _tab_fingerprint(tab: ChatTab) -> tuple[object, ...]:
         """Лёгкий след состояния вкладки: сравнение дешевле, чем запись."""
         agent = tab.agent
-        history = agent.memory.history
+        memory = agent.memory
+        history = memory.history
         last = history[-1].to_api() if history else None
         settings = agent.settings
         return (
@@ -408,7 +440,12 @@ class AgentApp(App[None]):
             settings.max_tokens,
             tuple(settings.stop),
             agent.system_prompt,
-            agent.memory.summary,
+            memory.summary,
+            settings.context_strategy,
+            settings.sliding_window,
+            memory.active_branch,
+            len(memory.branches),
+            tuple(sorted(memory.facts.items())),
         )
 
     def _persist_tab(self, tab: ChatTab) -> None:
@@ -423,8 +460,17 @@ class AgentApp(App[None]):
             agent.system_prompt,
             agent.memory.history,
             summary=agent.memory.summary,
+            facts=agent.memory.facts,
+            active_branch=agent.memory.active_branch,
+            branches=agent.memory.branches,
         )
         tab._fingerprint = self._tab_fingerprint(tab)
+
+    def persist_active(self) -> None:
+        """Немедленный снапшот активной вкладки (команды вроде /checkout)."""
+        tab = self.active_tab()
+        if tab is not None:
+            self._persist_tab(tab)
 
     def _persist_all(self) -> None:
         for tab in self._tabs:
