@@ -20,6 +20,7 @@ export interface AgentState {
   id: AgentId;
   name: string;
   model: string;
+  projectId?: string;
   settings: AgentSettingsState;
   systemPromptPath: string;
   systemPromptContent: string;
@@ -50,6 +51,7 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     id: dto.id,
     name: dto.name,
     model: dto.model,
+    projectId: dto.project_id ?? "",
     settings: { ...dto.settings, stop: [...dto.settings.stop] },
     systemPromptPath: dto.system_prompt.path,
     systemPromptContent: dto.system_prompt.content,
@@ -72,8 +74,17 @@ export const useAgentsStore = defineStore("agents", () => {
   const agents = ref<Record<AgentId, AgentState>>({});
   const order = ref<AgentId[]>([]);
   const activeAgentId = ref<AgentId | null>(null);
-  /** Записи долговременной памяти (общие для всех агентов процесса). */
-  const longtermEntries = ref<string[]>([]);
+  /** Записи долговременной памяти по проектам (ключ — project_id). */
+  const longtermByProject = ref<Record<string, string[]>>({});
+  /** Долговременная память активного агента (проект, к которому он привязан). */
+  const longtermEntries = computed(() => {
+    const pid = agents.value[activeAgentId.value ?? ""]?.projectId ?? "";
+    return longtermByProject.value[pid] ?? [];
+  });
+
+  function projectOf(id: AgentId): string {
+    return agents.value[id]?.projectId ?? "";
+  }
 
   // AbortController текущего стрима на агента (не реактивно, ключи динамические).
   const aborts = new Map<AgentId, AbortController>();
@@ -101,6 +112,7 @@ export const useAgentsStore = defineStore("agents", () => {
     const state = existing ?? stateFromDTO(dto);
     state.name = dto.name;
     state.model = dto.model;
+    state.projectId = dto.project_id ?? state.projectId;
     state.settings = { ...dto.settings, stop: [...dto.settings.stop] };
     state.systemPromptPath = dto.system_prompt.path;
     state.systemPromptContent = dto.system_prompt.content;
@@ -138,8 +150,8 @@ export const useAgentsStore = defineStore("agents", () => {
     state.history = await api.getMessages(id);
   }
 
-  async function createAgent(name?: string): Promise<AgentState> {
-    const dto = await api.createAgent(name);
+  async function createAgent(name?: string, projectId?: string): Promise<AgentState> {
+    const dto = await api.createAgent(name, projectId);
     const state = upsert(dto);
     setActive(dto.id);
     // новый чат стартует с последней выбранной модели (если она ещё доступна)
@@ -255,37 +267,45 @@ export const useAgentsStore = defineStore("agents", () => {
 
   // --- память ---
 
-  // --- долговременная память (общая для всех агентов) ---
+  // --- долговременная память (своя у каждого проекта) ---
+
+  function resolveProject(projectId?: string): string {
+    if (projectId !== undefined) return projectId;
+    const id = activeAgentId.value;
+    return id !== null ? projectOf(id) : "";
+  }
 
   function applyLongterm(dto: LongTermDTO): void {
-    longtermEntries.value = dto.entries;
+    const pid = dto.project_id ?? resolveProject();
+    longtermByProject.value[pid] = dto.entries;
   }
 
-  /** Обновить записи долговременной памяти из бэкенда. */
-  async function refreshLongterm(): Promise<void> {
-    applyLongterm(await api.getLongterm());
+  /** Обновить записи долговременной памяти проекта из бэкенда. */
+  async function refreshLongterm(projectId?: string): Promise<void> {
+    applyLongterm(await api.getLongterm(projectId));
   }
 
-  /** Добавить знание в долговременную память. */
-  async function addLongterm(content: string): Promise<void> {
-    applyLongterm(await api.remember(content));
+  /** Добавить знание в долговременную память проекта. */
+  async function addLongterm(content: string, projectId?: string): Promise<void> {
+    applyLongterm(await api.remember(content, projectId));
   }
 
-  /** Заменить запись долговременной памяти по индексу. */
-  async function updateLongterm(index: number, content: string): Promise<void> {
-    applyLongterm(await api.updateLongterm(index, content));
+  /** Заменить запись долговременной памяти проекта по индексу. */
+  async function updateLongterm(index: number, content: string, projectId?: string): Promise<void> {
+    applyLongterm(await api.updateLongterm(index, content, projectId));
   }
 
-  /** Удалить запись долговременной памяти по индексу. */
-  async function removeLongterm(index: number): Promise<void> {
-    applyLongterm(await api.forget(index));
+  /** Удалить запись долговременной памяти проекта по индексу. */
+  async function removeLongterm(index: number, projectId?: string): Promise<void> {
+    applyLongterm(await api.forget(index, projectId));
   }
 
-  /** Принять предложение памяти: знание уходит в долгосрочную память. */
+  /** Принять предложение памяти: знание уходит в долгосрочную память проекта агента. */
   async function acceptSuggestion(id: AgentId): Promise<void> {
     const state = agents.value[id];
     if (state === undefined || state.memorySuggestion === null) return;
-    applyLongterm(await api.acceptSuggestion(id));
+    const dto = await api.acceptSuggestion(id);
+    applyLongterm(dto);
     state.memorySuggestion = null;
   }
 

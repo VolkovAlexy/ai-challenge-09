@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import json
 import sqlite3
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     settings_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    title TEXT NOT NULL DEFAULT ''
+    title TEXT NOT NULL DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -39,7 +41,20 @@ CREATE TABLE IF NOT EXISTS messages (
     message_json TEXT NOT NULL,
     PRIMARY KEY (session_id, seq)
 );
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS longterm_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions (updated_at);
+CREATE INDEX IF NOT EXISTS idx_longterm_project ON longterm_entries (project_id);
 """
 
 # миграции со старых схем (IF NOT EXISTS/добавление колонок — idempotent)
@@ -51,6 +66,10 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN branches_json TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE sessions ADD COLUMN scratchpad TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+    # создаётся ПОСЛЕ добавления column project_id — на старой БД индекс
+    # не может существовать до наращивания схемы
+    "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id)",
 ]
 
 
@@ -63,6 +82,17 @@ class SessionInfo:
     updated_at: str
     model: str | None = None
     message_count: int | None = None
+    project_id: str = ""
+
+
+@dataclass
+class ProjectInfo:
+    """Проект: верхний уровень иерархии памяти (свои сессии и долгосрочная память)."""
+
+    id: str
+    name: str
+    session_count: int = 0
+    updated_at: str = ""
 
 
 def _now() -> str:
@@ -111,6 +141,7 @@ class SessionStore:
         scratchpad: str = "",
         active_branch: str = DEFAULT_BRANCH,
         branches: dict[str, BranchState] | None = None,
+        project_id: str = "",
     ) -> None:
         """Атомарный upsert-снапшот: метаданные + полная замена истории.
 
@@ -136,8 +167,9 @@ class SessionStore:
                 """
                     INSERT INTO sessions
                         (id, name, title, system_prompt, settings_json, summary, compacted_upto,
-                         facts, scratchpad, active_branch, branches_json, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         facts, scratchpad, active_branch, branches_json, created_at, updated_at,
+                         project_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET
                         name = excluded.name,
                         system_prompt = excluded.system_prompt,
@@ -148,7 +180,8 @@ class SessionStore:
                         scratchpad = excluded.scratchpad,
                         active_branch = excluded.active_branch,
                         branches_json = excluded.branches_json,
-                        updated_at = excluded.updated_at
+                        updated_at = excluded.updated_at,
+                        project_id = excluded.project_id
                     """,
                 (
                     session_id,
@@ -164,6 +197,7 @@ class SessionStore:
                     json.dumps(inactive, ensure_ascii=False),
                     now,
                     now,
+                    project_id,
                 ),
             )
             self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -172,17 +206,29 @@ class SessionStore:
                 rows,
             )
 
-    def list(self, limit: int | None = None, offset: int = 0) -> list[SessionInfo]:
+    def list(
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+        project_id: str | None = None,
+    ) -> list[SessionInfo]:
         """Непустые сессии, newest-first (по updated_at).
 
-        Пустые (0 сообщений, например только что созданный чат) не возвращаются.
+        `project_id` — фильтр по проекту (None → все проекты). Пустые
+        (0 сообщений, например только что созданный чат) не возвращаются.
         title — первое сообщение пользователя (тема сессии); если его нет,
         fallback на имя сессии. model — из settings_json. message_count — число
         сообщений. limit=None → без ограничений.
         """
+        where = ""
+        params: list[object] = []
+        if project_id is not None:
+            where = "WHERE s.project_id = ?"
+            params.append(project_id)
+        params.extend([limit if limit is not None else -1, offset])
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT s.id,
                        COALESCE(NULLIF(s.title, ''), (
                            SELECT json_extract(m2.message_json, '$.content')
@@ -196,14 +242,16 @@ class SessionStore:
                        ), s.name) AS title_raw,
                        json_extract(s.settings_json, '$.model') AS model,
                        s.updated_at,
-                       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) AS msg_cnt
+                       (SELECT COUNT(*) FROM messages WHERE session_id = s.id) AS msg_cnt,
+                       s.project_id
                 FROM sessions s
                 JOIN messages m ON m.session_id = s.id
+                {where}
                 GROUP BY s.id
                 ORDER BY s.updated_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                [limit if limit is not None else -1, offset],
+                params,
             ).fetchall()
         return [
             SessionInfo(
@@ -212,6 +260,7 @@ class SessionStore:
                 model=r[2] if r[2] else None,
                 updated_at=r[3],
                 message_count=int(r[4]) if r[4] is not None else None,
+                project_id=r[5] or "",
             )
             for r in rows
         ]
@@ -280,6 +329,145 @@ class SessionStore:
             )
             self._conn.commit()
         return cur.rowcount > 0
+
+    def get_project_id(self, session_id: str) -> str:
+        """Проект, которому принадлежит сессия ('' — неизвестно/легаси)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT project_id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        return row[0] or "" if row else ""
+
+    def create_project(self, name: str) -> ProjectInfo:
+        """Создаёт проект. Имя схлопывается в одну строку; пустое — ValueError."""
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            raise ValueError("имя проекта не может быть пустым")
+        project_id = self.new_id()
+        now = _now()
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (project_id, cleaned, now, now),
+            )
+        return ProjectInfo(id=project_id, name=cleaned, updated_at=now)
+
+    def ensure_project(self, project_id: str, name: str) -> None:
+        """Создаёт проект с заданным id, если его ещё нет (idempotent)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO projects (id, name, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?)",
+                (project_id, name, _now(), _now()),
+            )
+
+    def list_projects(self) -> builtins.list[ProjectInfo]:
+        """Все проекты с числом сессий, newest-first (по updated_at)."""
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT p.id, p.name, p.updated_at,
+                       (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS cnt
+                FROM projects p
+                ORDER BY p.updated_at DESC, p.name
+                """
+            ).fetchall()
+        return [
+            ProjectInfo(id=r[0], name=r[1], updated_at=r[2], session_count=int(r[3] or 0))
+            for r in rows
+        ]
+
+    def get_project(self, project_id: str) -> ProjectInfo | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT p.id, p.name, p.updated_at,
+                       (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) AS cnt
+                FROM projects p WHERE p.id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProjectInfo(
+            id=row[0], name=row[1], session_count=int(row[3] or 0), updated_at=row[2]
+        )
+
+    def rename_project(self, project_id: str, name: str) -> bool:
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            raise ValueError("имя проекта не может быть пустым")
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE projects SET name = ?, updated_at = ? WHERE id = ?",
+                (cleaned, _now(), project_id),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def delete_project(self, project_id: str) -> bool:
+        """Удаляет проект, его сессии и долгосрочную память. True, если он был."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM longterm_entries WHERE project_id = ?", (project_id,))
+            self._conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
+            cur = self._conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        return cur.rowcount > 0
+
+    # --- долгосрочная память проекта (SQL) ---
+
+    def list_longterm(self, project_id: str) -> builtins.list[str]:
+        """Записи долгосрочной памяти проекта (по порядку добавления)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT text FROM longterm_entries WHERE project_id = ? ORDER BY id",
+                (project_id,),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def append_longterm(self, project_id: str, text: str) -> str:
+        """Добавляет запись (одна строка). Возвращает нормализованный текст."""
+        entry = " ".join(text.split())
+        if not entry:
+            raise ValueError("запись памяти не может быть пустой")
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO longterm_entries (project_id, text, created_at) VALUES (?, ?, ?)",
+                (project_id, entry, _now()),
+            )
+        return entry
+
+    def remove_longterm(self, project_id: str, index: int) -> str:
+        """Удаляет запись по индексу (0-based). IndexError — индекса нет."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, text FROM longterm_entries WHERE project_id = ? ORDER BY id",
+                (project_id,),
+            ).fetchall()
+            if index < 0 or index >= len(rows):
+                raise IndexError(f"записи памяти с индексом {index} нет")
+            entry_id, text = rows[index]
+            self._conn.execute("DELETE FROM longterm_entries WHERE id = ?", (entry_id,))
+            self._conn.commit()
+        return str(text)
+
+    def update_longterm(self, project_id: str, index: int, text: str) -> str:
+        """Заменяет запись по индексу; возвращает новый текст (нормализован)."""
+        entry = " ".join(text.split())
+        if not entry:
+            raise ValueError("запись памяти не может быть пустой")
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM longterm_entries WHERE project_id = ? ORDER BY id",
+                (project_id,),
+            ).fetchall()
+            if index < 0 or index >= len(rows):
+                raise IndexError(f"записи памяти с индексом {index} нет")
+            entry_id = rows[index][0]
+            self._conn.execute(
+                "UPDATE longterm_entries SET text = ? WHERE id = ?", (entry, entry_id)
+            )
+            self._conn.commit()
+        return entry
 
     def export(self, session_id: str, path: Path | str) -> Path:
         """Экспортирует сессию в jsonl (формат совместим со старыми /save-файлами)."""

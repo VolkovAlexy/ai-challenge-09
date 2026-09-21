@@ -60,16 +60,27 @@ class AgentDTO(BaseModel):
     context_window: int
     streaming: bool
     compacting: bool
+    project_id: str = ""  # проект, которому принадлежит агент (и его сессия)
     scratchpad: str = ""  # рабочая память текущей задачи
     memory_suggestion: str | None = None  # предложение сохранить знание (ждёт решения UI)
 
 
 class LongTermDTO(BaseModel):
-    """Долговременная память: путь к файлу, содержимое, записи (строки-буллеты)."""
+    """Долговременная память: содержимое и записи (строки-буллеты)."""
 
-    path: str
+    project_id: str = ""
+    path: str = ""
     content: str
     entries: list[str]
+
+
+class ProjectDTO(BaseModel):
+    """Проект: верхний уровень иерархии памяти (свои сессии и долгосрочная память)."""
+
+    id: str
+    name: str
+    session_count: int
+    updated_at: str
 
 
 class ProviderDTO(BaseModel):
@@ -109,6 +120,7 @@ class SessionInfoDTO(BaseModel):
     updated_at: str
     model: str | None = None
     message_count: int | None = None
+    project_id: str = ""
 
 
 # --- запросы ---
@@ -116,6 +128,15 @@ class SessionInfoDTO(BaseModel):
 
 class CreateAgentRequest(BaseModel):
     name: str | None = None
+    project_id: str | None = None
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+
+
+class PatchProjectRequest(BaseModel):
+    name: str
 
 
 class SendMessageRequest(BaseModel):

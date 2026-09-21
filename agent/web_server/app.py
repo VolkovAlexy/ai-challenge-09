@@ -122,7 +122,8 @@ def create_app(state: WebState) -> FastAPI:
     @app.post("/api/agents")
     def create_agent(body: dto.CreateAgentRequest | None = None) -> dto.AgentDTO:
         name = body.name if body is not None else None
-        record = state.create_agent(name)
+        project_id = body.project_id if body is not None else None
+        record = state.create_agent(name, project_id)
         state.active_agent_id = record.agent_id
         return state.agent_dto(record)
 
@@ -186,19 +187,19 @@ def create_app(state: WebState) -> FastAPI:
     # --- сессии ---
 
     @app.get("/api/sessions")
-    def list_sessions(limit: int | None = None, offset: int = 0) -> list[dto.SessionInfoDTO]:
-        return state.sessions_dto(limit=limit, offset=offset)
+    def list_sessions(
+        limit: int | None = None,
+        offset: int = 0,
+        project_id: str | None = None,
+    ) -> list[dto.SessionInfoDTO]:
+        return state.sessions_dto(limit=limit, offset=offset, project_id=project_id)
 
     @app.post("/api/agents/{agent_id}/load-session")
     def load_session(agent_id: str, body: dto.LoadSessionRequest) -> dto.AgentDTO:
-        record = _record_or_404(agent_id)
-        data = state.store.get(body.session_id)
-        if data is None:
-            raise HTTPException(status_code=404, detail="сессия не найдена")
-        record.agent.apply_session(data)
-        record.session_id = body.session_id
-        state.set_active(agent_id)
-        state.persist(record)
+        try:
+            record = state.load_session(agent_id, body.session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return state.agent_dto(record)
 
     @app.post("/api/agents/{agent_id}/export")
@@ -277,33 +278,71 @@ def create_app(state: WebState) -> FastAPI:
             "messages": [message.model_dump() for message in state.history_dto(record)],
         }
 
-    # --- долговременная память ---
+    # --- долговременная память (по проекту) ---
 
     @app.get("/api/longterm")
-    def get_longterm() -> dto.LongTermDTO:
-        return state.longterm_dto()
+    def get_longterm(project_id: str | None = None) -> dto.LongTermDTO:
+        return state.longterm_dto(project_id)
 
     @app.post("/api/longterm")
-    def post_longterm(body: dto.RememberRequest) -> dto.LongTermDTO:
+    def post_longterm(body: dto.RememberRequest, project_id: str | None = None) -> dto.LongTermDTO:
         if not body.content.strip():
             raise HTTPException(status_code=400, detail="content не может быть пустым")
-        return state.remember(body.content)
+        return state.remember(body.content, project_id)
 
     @app.delete("/api/longterm/{index}")
-    def delete_longterm(index: int) -> dto.LongTermDTO:
+    def delete_longterm(index: int, project_id: str | None = None) -> dto.LongTermDTO:
         try:
-            return state.forget(index)
+            return state.forget(index, project_id)
         except IndexError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.put("/api/longterm/{index}")
-    def put_longterm(index: int, body: dto.RememberRequest) -> dto.LongTermDTO:
+    def put_longterm(
+        index: int, body: dto.RememberRequest, project_id: str | None = None
+    ) -> dto.LongTermDTO:
         if not body.content.strip():
             raise HTTPException(status_code=400, detail="content не может быть пустым")
         try:
-            return state.update_longterm(index, body.content)
+            return state.update_longterm(index, body.content, project_id)
         except IndexError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # --- проекты (Слой 1) ---
+
+    @app.get("/api/projects")
+    def list_projects() -> list[dto.ProjectDTO]:
+        return state.list_projects()
+
+    @app.post("/api/projects")
+    def create_project(body: dto.CreateProjectRequest) -> dto.ProjectDTO:
+        try:
+            return state.create_project(body.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}")
+    def get_project(project_id: str) -> dto.ProjectDTO:
+        project = state.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="проект не найден")
+        return project
+
+    @app.patch("/api/projects/{project_id}")
+    def patch_project(project_id: str, body: dto.PatchProjectRequest) -> dto.ProjectDTO:
+        if not state.rename_project(project_id, body.name):
+            raise HTTPException(status_code=404, detail="проект не найден")
+        project = state.get_project(project_id)
+        assert project is not None
+        return project
+
+    @app.delete("/api/projects/{project_id}")
+    def delete_project(project_id: str) -> dict[str, bool]:
+        if project_id == state.default_project_id:
+            raise HTTPException(status_code=400, detail="нельзя удалить проект по умолчанию")
+        if not state.delete_project(project_id):
+            raise HTTPException(status_code=404, detail="проект не найден")
+        return {"ok": True}
 
     # --- предложение памяти (MEMORY_SUGGESTION) ---
 

@@ -38,6 +38,8 @@ export interface AgentDTO {
   model: string; // provider:model
   settings: AgentSettingsDTO;
   system_prompt: { path: string; content: string };
+  /** проект, которому принадлежит вкладка (Слой 1) */
+  project_id?: string;
   context_used: number;
   context_window: number;
   streaming: boolean;
@@ -77,6 +79,16 @@ export interface SessionInfoDTO {
   updated_at: string;
   model?: string;
   message_count?: number;
+  /** проект, которому принадлежит сессия */
+  project_id?: string;
+}
+
+/** Проект (Слой 1): владеет долгосрочной памятью и набором сессий. */
+export interface ProjectDTO {
+  id: string;
+  name: string;
+  session_count: number;
+  updated_at: string;
 }
 
 export interface PatchAgentDTO {
@@ -103,7 +115,10 @@ export type StreamEvent =
   | { event: "error"; kind: "http" | "network"; detail: string };
 
 export interface LongTermDTO {
-  path: string;
+  /** пустой для SQL-хранилища (записи в longterm_entries) */
+  path?: string;
+  /** проект, чья память запрошена */
+  project_id?: string;
   content: string;
   entries: string[];
 }

@@ -16,6 +16,7 @@ import type { CommandDTO, PatchAgentDTO } from "@/api/types";
 import { useAgentsStore } from "@/stores/agents";
 import { useConfigStore } from "@/stores/config";
 import { useSessionsStore } from "@/stores/sessions";
+import { useProjectsStore } from "@/stores/projects";
 import { buildRegistry, findCommand, parseCommand, type ChatCommand, type CommandContext } from "@/commands/registry";
 import { useChatStream } from "@/composables/useChatStream";
 import ChatView from "@/components/ChatView.vue";
@@ -25,10 +26,12 @@ import HistoryModal from "@/components/chat/HistoryModal.vue";
 import HelpPalette from "@/components/palettes/HelpPalette.vue";
 import ModelPalette from "@/components/palettes/ModelPalette.vue";
 import SessionPalette from "@/components/palettes/SessionPalette.vue";
+import ProjectMemoryModal from "@/components/ProjectMemoryModal.vue";
 
 const agentsStore = useAgentsStore();
 const configStore = useConfigStore();
 const sessionsStore = useSessionsStore();
+const projectsStore = useProjectsStore();
 
 const commandsDTO = ref<CommandDTO[]>([]);
 const registry = ref<ChatCommand[]>([]);
@@ -70,12 +73,14 @@ type Overlay =
   | { kind: "help" }
   | { kind: "history" }
   | { kind: "system-prompt" }
-  | { kind: "confirm"; text: string; action: "close" | "clear" | "delete-session" };
+  | { kind: "confirm"; text: string; action: "close" | "clear" | "delete-session" | "delete-project" }
+  | { kind: "project-memory"; projectId: string; projectName: string };
 const overlay = ref<Overlay>({ kind: "none" });
 
 function onStreamEvent(ev: { event: string }): void {
   if (ev.event === "done" || ev.event === "cancelled" || ev.event === "error") {
-    void sessionsStore.load(20, 0);
+    void sessionsStore.loadAll();
+    void projectsStore.load();
   }
 }
 
@@ -98,8 +103,13 @@ async function boot(): Promise<void> {
   } catch (e) {
     bootError.value = e instanceof Error ? e.message : String(e);
   }
+  try {
+    await projectsStore.load();
+  } catch (e) {
+    bootError.value = e instanceof Error ? e.message : String(e);
+  }
   if (agentsStore.activeAgent === null) {
-    await agentsStore.createAgent();
+    await agentsStore.createAgent(undefined, projectsStore.activeProjectId ?? undefined);
   }
 }
 
@@ -184,7 +194,8 @@ async function patchActive(patch: PatchAgentDTO): Promise<void> {
 }
 
 let confirmResolve: ((ok: boolean) => void) | null = null;
-function confirmAsk(text: string, action: "close" | "clear" | "delete-session"): Promise<boolean> {
+let pendingDeleteProject: string | null = null;
+function confirmAsk(text: string, action: "close" | "clear" | "delete-session" | "delete-project"): Promise<boolean> {
   overlay.value = { kind: "confirm", text, action };
   return new Promise((resolve) => { confirmResolve = resolve; });
 }
@@ -197,6 +208,8 @@ function onConfirmAnswer(ok: boolean): void {
   if (ok && ov.kind === "confirm" && ov.action === "close") {
     const id = agentsStore.activeAgentId;
     if (id !== null) void agentsStore.closeAgent(id);
+  } else if (ok && ov.kind === "confirm" && ov.action === "delete-project") {
+    if (pendingDeleteProject !== null) void doDeleteProject(pendingDeleteProject);
   }
 }
 
@@ -263,7 +276,8 @@ function onSessionSelect(sessionId: string): void {
 
 async function onSessionBranch(sessionId: string): Promise<void> {
   await agentsStore.branchFromSession(sessionId);
-  await sessionsStore.reload();
+  await sessionsStore.loadAll();
+  await projectsStore.load();
 }
 
 async function onSessionRename(sessionId: string, title: string): Promise<void> {
@@ -276,8 +290,37 @@ async function onSessionDelete(sessionId: string): Promise<void> {
   await sessionsStore.remove(sessionId);
 }
 
-async function onNewChat(): Promise<void> {
-  await agentsStore.createAgent();
+async function onNewChat(projectId?: string): Promise<void> {
+  await agentsStore.createAgent(undefined, projectId ?? projectsStore.activeProjectId ?? undefined);
+}
+
+async function onCreateProject(name: string): Promise<void> {
+  await projectsStore.create(name);
+}
+
+async function onRenameProject(projectId: string, name: string): Promise<void> {
+  await projectsStore.rename(projectId, name);
+}
+
+async function onDeleteProject(projectId: string): Promise<void> {
+  pendingDeleteProject = projectId;
+  const ok = await confirmAsk("Удалить проект и все его сессии? Действие необратимо.", "delete-project");
+  if (ok) await doDeleteProject(projectId);
+}
+
+async function doDeleteProject(projectId: string): Promise<void> {
+  await projectsStore.remove(projectId);
+  await agentsStore.loadAll();
+  await sessionsStore.loadAll();
+}
+
+function onSelectProject(_projectId: string): void {
+  // активный проект уже установлен в сайдбаре; подхватываем его в хранилищах при новом чате
+}
+
+function onProjectMemory(projectId: string): void {
+  const name = projectsStore.projects.find((p) => p.id === projectId)?.name ?? "Проект";
+  overlay.value = { kind: "project-memory", projectId, projectName: name };
 }
 </script>
 
@@ -299,6 +342,11 @@ async function onNewChat(): Promise<void> {
               @branch="onSessionBranch"
               @delete="onSessionDelete"
               @rename="onSessionRename"
+              @create-project="onCreateProject"
+              @rename-project="onRenameProject"
+              @delete-project="onDeleteProject"
+              @select-project="onSelectProject"
+              @memory="onProjectMemory"
             />
           </n-layout-sider>
           <n-layout-content>
@@ -351,6 +399,21 @@ async function onNewChat(): Promise<void> {
             {{ agentsStore.activeAgent?.systemPromptPath }}
           </div>
           <pre style="margin: 0; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 13px; max-height: 60vh; overflow: auto; color: #c8ccd4;">{{ agentsStore.activeAgent?.systemPromptContent }}</pre>
+        </n-modal>
+        <n-modal
+          v-if="overlay.kind === 'project-memory'"
+          :show="true"
+          preset="card"
+          :title="`Память проекта — ${overlay.projectName}`"
+          style="width: 560px;"
+          @close="overlay = { kind: 'none' }"
+        >
+          <ProjectMemoryModal
+            :project-id="overlay.projectId"
+            :project-name="overlay.projectName"
+            @close="overlay = { kind: 'none' }"
+            @updated="projectsStore.load()"
+          />
         </n-modal>
         <ConfirmDialog
           v-if="overlay.kind === 'confirm'"

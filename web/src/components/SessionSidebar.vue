@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { NButton, NScrollbar, NDivider, NDropdown } from "naive-ui";
-import type { SessionInfoDTO } from "@/api/types";
+import { computed, onMounted, ref } from "vue";
+import { NButton, NScrollbar, NDivider, NDropdown, NInput } from "naive-ui";
+import type { ProjectDTO, SessionInfoDTO } from "@/api/types";
+import { useProjectsStore } from "@/stores/projects";
 import { useSessionsStore } from "@/stores/sessions";
 
 defineProps<{
@@ -10,28 +11,97 @@ defineProps<{
 
 const emit = defineEmits<{
   (e: "select", sessionId: string): void;
-  (e: "newChat"): void;
+  (e: "newChat", projectId?: string): void;
   (e: "branch", sessionId: string): void;
   (e: "delete", sessionId: string): void;
   (e: "rename", sessionId: string, title: string): void;
+  (e: "createProject", name: string): void;
+  (e: "renameProject", projectId: string, name: string): void;
+  (e: "deleteProject", projectId: string): void;
+  (e: "selectProject", projectId: string): void;
+  (e: "memory", projectId: string): void;
 }>();
 
+const projectsStore = useProjectsStore();
 const sessionsStore = useSessionsStore();
 const loaded = ref(false);
 
 onMounted(async () => {
-  await sessionsStore.load(20, 0);
+  await Promise.all([projectsStore.load(), sessionsStore.loadAll()]);
   loaded.value = true;
 });
 
-const cardOptions = [
+/** Сессии, сгруппированные по project_id. */
+const byProject = computed<Record<string, SessionInfoDTO[]>>(() => {
+  const groups: Record<string, SessionInfoDTO[]> = {};
+  for (const s of sessionsStore.sessions) {
+    const pid = s.project_id ?? "";
+    (groups[pid] ??= []).push(s);
+  }
+  return groups;
+});
+
+const projectOptions = (project: ProjectDTO) => [
+  { label: "Новый чат", key: "new-chat" },
+  { label: "Память", key: "memory" },
+  { label: "Переименовать", key: "rename" },
+  { label: "Удалить", key: "delete", disabled: project.id === "default" },
+];
+
+const sessionCardOptions = [
   { label: "Бранч", key: "branch" },
   { label: "Изменить описание", key: "rename" },
   { label: "Удалить", key: "delete" },
 ];
 
-const editingId = ref<string | null>(null);
+const creating = ref(false);
+const createDraft = ref("");
+const renameProjectId = ref<string | null>(null);
+const renameDraft = ref("");
+const editingSessionId = ref<string | null>(null);
 const editDraft = ref("");
+
+function onProjectAction(key: string, project: ProjectDTO): void {
+  if (key === "new-chat") emit("newChat", project.id);
+  else if (key === "memory") emit("memory", project.id);
+  else if (key === "rename") startProjectRename(project);
+  else if (key === "delete") emit("deleteProject", project.id);
+}
+
+function startProjectRename(project: ProjectDTO): void {
+  renameProjectId.value = project.id;
+  renameDraft.value = project.name;
+}
+
+function cancelProjectRename(): void {
+  renameProjectId.value = null;
+}
+
+function confirmProjectRename(project: ProjectDTO): void {
+  if (renameProjectId.value !== project.id) return;
+  const name = renameDraft.value.trim();
+  renameProjectId.value = null;
+  if (name !== "" && name !== project.name) emit("renameProject", project.id, name);
+}
+
+function startCreate(): void {
+  creating.value = true;
+  createDraft.value = "";
+}
+
+function cancelCreate(): void {
+  creating.value = false;
+  createDraft.value = "";
+}
+
+function confirmCreate(): void {
+  if (!creating.value) return;
+  const name = createDraft.value.trim();
+  creating.value = false;
+  if (name === "") return;
+  emit("createProject", name);
+  createDraft.value = "";
+}
 
 function onCardAction(key: string, session: SessionInfoDTO): void {
   if (key === "branch") emit("branch", session.id);
@@ -40,19 +110,25 @@ function onCardAction(key: string, session: SessionInfoDTO): void {
 }
 
 function startRename(session: SessionInfoDTO): void {
-  editingId.value = session.id;
+  editingSessionId.value = session.id;
   editDraft.value = session.title;
 }
 
 function cancelRename(): void {
-  editingId.value = null;
+  editingSessionId.value = null;
 }
 
 function confirmRename(session: SessionInfoDTO): void {
-  if (editingId.value !== session.id) return;
+  if (editingSessionId.value !== session.id) return;
   const title = editDraft.value.trim();
-  editingId.value = null;
+  editingSessionId.value = null;
   if (title !== session.title) emit("rename", session.id, title);
+}
+
+function onProjectClick(project: ProjectDTO): void {
+  projectsStore.setActive(project.id);
+  projectsStore.toggle(project.id);
+  emit("selectProject", project.id);
 }
 
 function formatDate(iso: string): string {
@@ -74,51 +150,109 @@ function truncateModel(model: string | undefined): string {
 <template>
   <div class="sidebar-inner">
     <div class="sidebar-header">
-      <span>Чаты</span>
-      <n-button size="tiny" quaternary @click="emit('newChat')">+ Новый</n-button>
+      <span>Проекты</span>
+      <n-button size="tiny" quaternary @click="startCreate">+ Проект</n-button>
     </div>
     <n-divider style="margin: 0;" />
-    <div v-if="sessionsStore.loadError" class="sidebar-empty">
-      {{ sessionsStore.loadError }}
+
+    <div v-if="projectsStore.loadError" class="sidebar-empty">
+      {{ projectsStore.loadError }}
     </div>
-    <div v-else-if="sessionsStore.sessions.length === 0 && loaded" class="sidebar-empty">
-      Нет сохранённых чатов
+
+    <div v-if="creating" class="create-wrap">
+      <n-input
+        v-model:value="createDraft"
+        size="small"
+        placeholder="Имя проекта"
+        autofocus
+        @keyup.enter="confirmCreate"
+        @keyup.esc="cancelCreate"
+        @blur="confirmCreate"
+      />
     </div>
-    <n-scrollbar v-else style="flex: 1; min-height: 0;">
+
+    <div v-else-if="projectsStore.projects.length === 0 && loaded" class="sidebar-empty">
+      Нет проектов
+    </div>
+
+    <n-scrollbar v-else-if="projectsStore.projects.length > 0" style="flex: 1; min-height: 0;">
       <div class="sidebar-list">
         <div
-          v-for="session in sessionsStore.sessions"
-          :key="session.id"
-          class="session-card"
-          :class="{ active: session.id === activeSessionId }"
-          @click="emit('select', session.id)"
+          v-for="project in projectsStore.projects"
+          :key="project.id"
+          class="project-card"
+          :class="{ active: project.id === projectsStore.activeProjectId }"
         >
-          <template v-if="editingId === session.id">
-            <input
-              v-model="editDraft"
-              class="session-card-edit"
-              autofocus
-              @keyup.enter="confirmRename(session)"
-              @keyup.esc="cancelRename"
-              @blur="confirmRename(session)"
-            />
-          </template>
-          <template v-else>
-            <div class="session-card-title">{{ session.title }}</div>
-            <div class="session-card-meta">
-              <span>{{ formatDate(session.updated_at) }}</span>
-              <span v-if="session.model" class="session-card-model">{{ truncateModel(session.model) }}</span>
-              <span v-if="session.message_count !== undefined">{{ session.message_count }}</span>
+          <!-- заголовок проекта -->
+          <div class="project-head" @click="onProjectClick(project)">
+            <span class="project-caret" :class="{ open: projectsStore.isExpanded(project.id) }">▸</span>
+            <template v-if="renameProjectId === project.id">
+              <input
+                v-model="renameDraft"
+                class="project-rename"
+                autofocus
+                @keyup.enter="confirmProjectRename(project)"
+                @keyup.esc="cancelProjectRename"
+                @blur="confirmProjectRename(project)"
+              />
+            </template>
+            <template v-else>
+              <span class="project-name">{{ project.name }}</span>
+              <span class="project-meta">{{ (byProject[project.id] ?? []).length }} чатов</span>
+            </template>
+            <n-dropdown
+              :options="projectOptions(project)"
+              trigger="click"
+              placement="right-start"
+              @select="(key: string) => onProjectAction(key, project)"
+            >
+              <n-button class="project-menu" size="tiny" quaternary @click.stop>⋮</n-button>
+            </n-dropdown>
+          </div>
+
+          <!-- тело проекта: сессии -->
+          <div v-if="projectsStore.isExpanded(project.id)" class="project-body">
+            <div v-if="(byProject[project.id] ?? []).length === 0" class="sidebar-empty-small">
+              Нет чатов
             </div>
-          </template>
-          <n-dropdown
-            :options="cardOptions"
-            trigger="click"
-            placement="right-start"
-            @select="(key: string) => onCardAction(key, session)"
-          >
-            <n-button class="card-menu" size="tiny" quaternary @click.stop>⋮</n-button>
-          </n-dropdown>
+            <div
+              v-for="session in (byProject[project.id] ?? [])"
+              :key="session.id"
+              class="session-card"
+              :class="{ active: session.id === activeSessionId }"
+              @click="emit('select', session.id)"
+            >
+              <template v-if="editingSessionId === session.id">
+                <input
+                  v-model="editDraft"
+                  class="session-card-edit"
+                  autofocus
+                  @keyup.enter="confirmRename(session)"
+                  @keyup.esc="cancelRename"
+                  @blur="confirmRename(session)"
+                />
+              </template>
+              <template v-else>
+                <div class="session-card-title">{{ session.title }}</div>
+                <div class="session-card-meta">
+                  <span>{{ formatDate(session.updated_at) }}</span>
+                  <span v-if="session.model" class="session-card-model">{{ truncateModel(session.model) }}</span>
+                  <span v-if="session.message_count !== undefined">{{ session.message_count }}</span>
+                </div>
+              </template>
+              <n-dropdown
+                :options="sessionCardOptions"
+                trigger="click"
+                placement="right-start"
+                @select="(key: string) => onCardAction(key, session)"
+              >
+                <n-button class="card-menu" size="tiny" quaternary @click.stop>⋮</n-button>
+              </n-dropdown>
+            </div>
+            <n-button class="project-new-chat" size="tiny" quaternary @click="emit('newChat', project.id)">
+              + Новый чат
+            </n-button>
+          </div>
         </div>
       </div>
     </n-scrollbar>
@@ -155,11 +289,105 @@ function truncateModel(model: string | undefined): string {
   font-size: 13px;
 }
 
+.sidebar-empty-small {
+  padding: 8px 12px;
+  color: #555;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.create-wrap {
+  padding: 8px 10px;
+}
+
+/* --- карточка проекта --- */
+.project-card {
+  margin: 2px 0;
+  border: 1px solid #242833;
+  border-radius: 8px;
+  background: #1a1d25;
+  overflow: hidden;
+}
+
+.project-card.active {
+  border-color: #7aa2f7;
+}
+
+.project-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.project-head:hover {
+  background: #1c212c;
+}
+
+.project-caret {
+  color: #777;
+  font-size: 11px;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.project-caret.open {
+  transform: rotate(90deg);
+}
+
+.project-name {
+  font-size: 13px;
+  color: #c8ccd4;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-meta {
+  font-size: 11px;
+  color: #555;
+  flex-shrink: 0;
+}
+
+.project-rename {
+  flex: 1;
+  min-width: 0;
+  background: #1c212c;
+  border: 1px solid #7aa2f7;
+  border-radius: 6px;
+  color: #c8ccd4;
+  font-size: 13px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.project-menu {
+  flex-shrink: 0;
+  color: #888;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.project-head:hover .project-menu,
+.project-card.active .project-menu {
+  opacity: 1;
+}
+
+/* --- тело проекта: сессии --- */
+.project-body {
+  padding: 4px 6px 8px;
+  border-top: 1px solid #242833;
+}
+
 .session-card {
   position: relative;
-  padding: 10px 12px;
+  padding: 8px 10px;
   margin: 2px 0;
-  border-radius: 8px;
+  border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s, border-color 0.15s;
@@ -176,7 +404,7 @@ function truncateModel(model: string | undefined): string {
 }
 
 .session-card-title {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
   color: #c8ccd4;
   display: -webkit-box;
@@ -212,8 +440,8 @@ function truncateModel(model: string | undefined): string {
 
 .card-menu {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 6px;
+  right: 6px;
   opacity: 0;
   transition: opacity 0.15s;
   color: #888;
@@ -222,5 +450,11 @@ function truncateModel(model: string | undefined): string {
 .session-card:hover .card-menu,
 .session-card.active .card-menu {
   opacity: 1;
+}
+
+.project-new-chat {
+  margin: 6px 0 0 6px;
+  width: calc(100% - 12px);
+  justify-content: flex-start;
 }
 </style>

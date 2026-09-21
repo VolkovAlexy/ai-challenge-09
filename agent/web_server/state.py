@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 
 from agent.commands.registry import CommandRegistry
@@ -14,8 +15,8 @@ from agent.config.schema import AgentSettings, Config
 from agent.core.agent import Agent, AgentBusyError, TokenUsage
 from agent.core.message import Message, Role
 from agent.llm.client import LLMClient
-from agent.memory.longterm import LongTermMemory
-from agent.memory.persistence import SessionStore
+from agent.memory.longterm import LongTermSource, ProjectLongTermMemory
+from agent.memory.persistence import ProjectInfo, SessionStore
 from agent.tools.registry import ToolRegistry
 from agent.web_server.dto import (
     AgentDTO,
@@ -24,6 +25,7 @@ from agent.web_server.dto import (
     ConfigDTO,
     LongTermDTO,
     MessageDTO,
+    ProjectDTO,
     ProviderDTO,
     SessionInfoDTO,
     SystemPromptDTO,
@@ -32,6 +34,8 @@ from agent.web_server.dto import (
 
 DEFAULT_SYSTEM_PROMPT_PATH = "SYSTEM_PROMPT.md"
 DEFAULT_LONGTERM_PATH = "LONGTERM_MEMORY.md"
+DEFAULT_PROJECT_ID = "default"
+DEFAULT_PROJECT_NAME = "По умолчанию"
 
 
 @dataclass
@@ -42,6 +46,7 @@ class AgentRecord:
     agent: Agent
     session_id: str
     system_prompt_path: str
+    project_id: str = ""
     fingerprint: tuple[object, ...] = field(default_factory=tuple)
 
 
@@ -57,17 +62,31 @@ class WebState:
         store: SessionStore,
         default_system_prompt: str,
         default_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
-        longterm: LongTermMemory | None = None,
+        longterm: LongTermSource | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
         self.tools = tools
         self.store = store
-        self.longterm = longterm
+        self.default_project_id = DEFAULT_PROJECT_ID
         self._default_system_prompt = default_system_prompt
         self._default_prompt_path = default_prompt_path
         self._records: dict[str, AgentRecord] = {}
         self.active_agent_id: str | None = None
+        # проект по умолчанию всегда существует (верхний уровень иерархии памяти)
+        self.store.ensure_project(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME)
+        # миграция глобального markdown-файла в проект по умолчанию (однократная)
+        self._migrate_longterm(longterm)
+
+    def _migrate_longterm(self, source: LongTermSource | None) -> None:
+        """Переносит записи глобального LONGTERM_MEMORY.md в проект по умолчанию."""
+        if source is None:
+            return
+        if self.store.list_longterm(self.default_project_id):
+            return
+        for entry in source.entries():
+            with contextlib.suppress(ValueError):
+                self.store.append_longterm(self.default_project_id, entry)
 
     # --- доступ к записям ---
 
@@ -92,8 +111,12 @@ class WebState:
 
     # --- жизненный цикл агентов ---
 
-    def create_agent(self, name: str | None = None) -> AgentRecord:
+    def create_agent(self, name: str | None = None, project_id: str | None = None) -> AgentRecord:
         """Создаёт нового агента с дефолтными настройками и регистрирует его."""
+        if project_id is None:
+            project_id = self.default_project_id
+        if self.store.get_project(project_id) is None:
+            raise KeyError(f"проект не найден: {project_id}")
         settings = AgentSettings.from_config(self.config)
         agent = Agent(
             name=name or f"chat-{len(self._records) + 1}",
@@ -102,7 +125,8 @@ class WebState:
             llm=self.llm,
             config=self.config,
             tools=self.tools,
-            longterm=self.longterm,
+            longterm=ProjectLongTermMemory(self.store, project_id),
+            project_id=project_id,
         )
         agent_id = self.store.new_id()
         record = AgentRecord(
@@ -110,6 +134,7 @@ class WebState:
             agent=agent,
             session_id=self.store.new_id(),
             system_prompt_path=self._default_prompt_path,
+            project_id=project_id,
         )
         self._records[agent_id] = record
         if self.active_agent_id is None:
@@ -146,6 +171,7 @@ class WebState:
         data = self.store.get(session_id)
         if data is None:
             raise KeyError(f"сессия не найдена: {session_id}")
+        project_id = self.store.get_project_id(session_id) or self.default_project_id
         agent = Agent(
             name=data.name or f"chat-{len(self._records) + 1}",
             settings=data.settings,
@@ -153,18 +179,37 @@ class WebState:
             llm=self.llm,
             config=self.config,
             tools=self.tools,
-            longterm=self.longterm,
+            longterm=ProjectLongTermMemory(self.store, project_id),
+            project_id=project_id,
         )
         agent.apply_session(data)
         agent_id = self.store.new_id()
         record = AgentRecord(
             agent_id=agent_id,
             agent=agent,
-            session_id=self.store.new_id(),
             system_prompt_path=self._default_prompt_path,
+            session_id=self.store.new_id(),
+            project_id=project_id,
         )
         self._records[agent_id] = record
         self.active_agent_id = agent_id
+        self.persist(record)
+        return record
+
+    def load_session(self, agent_id: str, session_id: str) -> AgentRecord:
+        """Загружает сохранённую сессию в агента, перевязывая его на её проект."""
+        record = self._records.get(agent_id)
+        if record is None:
+            raise KeyError("агент не найден")
+        data = self.store.get(session_id)
+        if data is None:
+            raise KeyError(f"сессия не найдена: {session_id}")
+        project_id = self.store.get_project_id(session_id) or self.default_project_id
+        record.agent.set_project(project_id, ProjectLongTermMemory(self.store, project_id))
+        record.agent.apply_session(data)
+        record.session_id = session_id
+        record.project_id = project_id
+        self.set_active(agent_id)
         self.persist(record)
         return record
 
@@ -211,6 +256,7 @@ class WebState:
             scratchpad=agent.memory.scratchpad,
             active_branch=agent.memory.active_branch,
             branches=agent.memory.branches,
+            project_id=agent.project_id,
         )
         record.fingerprint = self._fingerprint(record)
 
@@ -220,48 +266,49 @@ class WebState:
             if record.fingerprint != self._fingerprint(record):
                 self.persist(record)
 
-    # --- долговременная память (общая для всех агентов) ---
+    # --- долговременная память (по слою проекта — Слой 1) ---
 
-    def longterm_dto(self) -> LongTermDTO:
-        """Текущее содержимое долговременной памяти (файл + записи)."""
-        if self.longterm is None:
-            return LongTermDTO(path="", content="", entries=[])
+    def _project_memory(self, project_id: str | None = None) -> ProjectLongTermMemory:
+        """Долговременная память проекта; по умолчанию — проект по умолчанию."""
+        if project_id is None:
+            project_id = self.default_project_id
+        return ProjectLongTermMemory(self.store, project_id)
+
+    def longterm_dto(self, project_id: str | None = None) -> LongTermDTO:
+        """Текущее содержимое долговременной памяти проекта."""
+        memory = self._project_memory(project_id)
+        entries = memory.entries()
         return LongTermDTO(
-            path=str(self.longterm.path),
-            content=self.longterm.load(),
-            entries=self.longterm.entries(),
+            project_id=memory.project_id,
+            path="",
+            content=memory.load(),
+            entries=entries,
         )
 
-    def remember(self, text: str) -> LongTermDTO:
-        """Добавляет знание в долговременную память; возвращает обновлённое состояние."""
-        if self.longterm is None:
-            raise RuntimeError("долговременная память недоступна")
-        self.longterm.append(text)
-        return self.longterm_dto()
+    def remember(self, text: str, project_id: str | None = None) -> LongTermDTO:
+        """Добавляет знание в долговременную память проекта."""
+        self._project_memory(project_id).append(text)
+        return self.longterm_dto(project_id)
 
-    def forget(self, index: int) -> LongTermDTO:
-        """Удаляет запись долговременной памяти по индексу."""
-        if self.longterm is None:
-            raise RuntimeError("долговременная память недоступна")
-        self.longterm.remove(index)
-        return self.longterm_dto()
+    def forget(self, index: int, project_id: str | None = None) -> LongTermDTO:
+        """Удаляет запись долговременной памяти проекта по индексу."""
+        self._project_memory(project_id).remove(index)
+        return self.longterm_dto(project_id)
 
-    def update_longterm(self, index: int, text: str) -> LongTermDTO:
-        """Заменяет запись долговременной памяти по индексу."""
-        if self.longterm is None:
-            raise RuntimeError("долговременная память недоступна")
-        self.longterm.update(index, text)
-        return self.longterm_dto()
+    def update_longterm(self, index: int, text: str, project_id: str | None = None) -> LongTermDTO:
+        """Заменяет запись долговременной памяти проекта по индексу."""
+        self._project_memory(project_id).update(index, text)
+        return self.longterm_dto(project_id)
 
     def accept_suggestion(self, agent_id: str) -> LongTermDTO:
-        """Принять предложение агента: знание — в долговременную память."""
+        """Принять предложение агента: знание — в долговременную память его проекта."""
         record = self._records.get(agent_id)
         if record is None:
             raise KeyError("агент не найден")
         suggestion = record.agent.pending_memory_suggestion
         if suggestion is None:
             raise ValueError("нет предложения для сохранения")
-        result = self.remember(suggestion)
+        result = self.remember(suggestion, record.agent.project_id)
         record.agent.dismiss_suggestion()
         return result
 
@@ -303,6 +350,7 @@ class WebState:
                 path=record.system_prompt_path,
                 content=agent.system_prompt,
             ),
+            project_id=agent.project_id,
             context_used=context_now[0],
             context_window=agent.context_window,
             streaming=agent.is_streaming,
@@ -382,7 +430,12 @@ class WebState:
             messages.append(self.message_dto(message, idx, usage))
         return messages
 
-    def sessions_dto(self, limit: int | None = None, offset: int = 0) -> list[SessionInfoDTO]:
+    def sessions_dto(
+        self,
+        limit: int | None = None,
+        offset: int = 0,
+        project_id: str | None = None,
+    ) -> list[SessionInfoDTO]:
         return [
             SessionInfoDTO(
                 id=info.id,
@@ -390,6 +443,45 @@ class WebState:
                 updated_at=info.updated_at,
                 model=info.model,
                 message_count=info.message_count,
+                project_id=info.project_id,
             )
-            for info in self.store.list(limit=limit, offset=offset)
+            for info in self.store.list(limit=limit, offset=offset, project_id=project_id)
         ]
+
+    # --- проекты (Слой 1) ---
+
+    def project_dto(self, info: ProjectInfo) -> ProjectDTO:
+        return ProjectDTO(
+            id=info.id,
+            name=info.name,
+            session_count=info.session_count,
+            updated_at=info.updated_at,
+        )
+
+    def list_projects(self) -> list[ProjectDTO]:
+        return [self.project_dto(info) for info in self.store.list_projects()]
+
+    def get_project(self, project_id: str) -> ProjectDTO | None:
+        info = self.store.get_project(project_id)
+        return self.project_dto(info) if info is not None else None
+
+    def create_project(self, name: str) -> ProjectDTO:
+        return self.project_dto(self.store.create_project(name))
+
+    def rename_project(self, project_id: str, name: str) -> bool:
+        return self.store.rename_project(project_id, name)
+
+    def delete_project(self, project_id: str) -> bool:
+        """Удаляет проект вместе с его сессиями и долговременной памятью."""
+        if self.store.delete_project(project_id):
+            removed = [
+                agent_id
+                for agent_id, record in self._records.items()
+                if record.agent.project_id == project_id
+            ]
+            for agent_id in removed:
+                del self._records[agent_id]
+            if self.active_agent_id in removed:
+                self.active_agent_id = None
+            return True
+        return False

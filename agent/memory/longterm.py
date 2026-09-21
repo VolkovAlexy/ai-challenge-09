@@ -16,8 +16,10 @@ import contextlib
 import os
 import tempfile
 from pathlib import Path
+from typing import Protocol
 
 from agent.core.message import Message
+from agent.memory.persistence import SessionStore
 
 LONGTERM_HEADER = "Долговременная память (сохранённые знания, общие для всех сессий):"
 LONGTERM_INSTRUCTION = (
@@ -35,6 +37,24 @@ FILE_HEADER = """# Долговременная память
 Знания об пользователе, предпочтения и глобальные паттерны поведения.
 Одна запись — одна строка; редактируется вручную или через интерфейс агента.
 """
+
+
+class LongTermSource(Protocol):
+    """Общий интерфейс долгосрочной памяти: markdown-файл или SQL-проект.
+
+    Agent читает память только через `load()`; state/web — через
+    `entries()/append()/remove()/update()`.
+    """
+
+    def load(self) -> str: ...
+
+    def entries(self) -> list[str]: ...
+
+    def append(self, text: str) -> str: ...
+
+    def remove(self, index: int) -> str: ...
+
+    def update(self, index: int, text: str) -> str: ...
 
 
 class Chunk:
@@ -141,3 +161,39 @@ class LongTermMemory:
     async def store(self, messages: list[Message]) -> None:
         """Stub: авто-сохранение диалога не делаем — запись только явная."""
         return None
+
+
+class ProjectLongTermMemory:
+    """Долгосрочная память проекта: записи в SQL (таблица longterm_entries).
+
+    Память уровня проекта (не сессии): видна всем сессиям проекта и
+    впрыскивается в контекст как и markdown-версия. Формат `load()`
+    воспроизводит FILE_HEADER + буллеты, чтобы инжект был идентичным.
+    """
+
+    def __init__(self, store: SessionStore, project_id: str) -> None:
+        self._store = store
+        self._project_id = project_id
+
+    @property
+    def project_id(self) -> str:
+        return self._project_id
+
+    def load(self) -> str:
+        """Содержимое памяти (заголовок + записи); пусто, если записей нет."""
+        body = "\n".join(ENTRY_PREFIX + entry for entry in self.entries())
+        if not body:
+            return ""
+        return FILE_HEADER + "\n" + body + "\n"
+
+    def entries(self) -> list[str]:
+        return self._store.list_longterm(self._project_id)
+
+    def append(self, text: str) -> str:
+        return self._store.append_longterm(self._project_id, text)
+
+    def remove(self, index: int) -> str:
+        return self._store.remove_longterm(self._project_id, index)
+
+    def update(self, index: int, text: str) -> str:
+        return self._store.update_longterm(self._project_id, index, text)

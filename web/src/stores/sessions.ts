@@ -26,6 +26,11 @@ export const useSessionsStore = defineStore("sessions", () => {
     await load(20, 0);
   }
 
+  /** Загрузить все сессии (без пагинации) — для группировки по проектам. */
+  async function loadAll(): Promise<void> {
+    await load(undefined, 0);
+  }
+
   async function remove(sessionId: string): Promise<void> {
     await api.deleteSession(sessionId);
     await reload();
@@ -36,5 +41,5 @@ export const useSessionsStore = defineStore("sessions", () => {
     await reload();
   }
 
-  return { sessions, loaded, loadError, hasMore, load, reload, remove, rename };
+  return { sessions, loaded, loadError, hasMore, load, reload, loadAll, remove, rename };
 });

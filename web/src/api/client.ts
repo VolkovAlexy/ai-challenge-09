@@ -9,6 +9,7 @@ import type {
   LongTermDTO,
   MessageDTO,
   PatchAgentDTO,
+  ProjectDTO,
   SessionInfoDTO,
   StreamEvent,
 } from "./types";
@@ -51,6 +52,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await response.json()) as T;
 }
 
+/** Строит query-строку `?project_id=…` или пустую строку. */
+function query(projectId?: string): string {
+  if (!projectId) return "";
+  return "?project_id=" + encodeURIComponent(projectId);
+}
+
 export const api = {
   getConfig: () => request<ConfigDTO>("GET", "/config"),
   getCommands: () => request<CommandDTO[]>("GET", "/commands"),
@@ -59,17 +66,19 @@ export const api = {
     request<{ path: string; content: string }>("PUT", "/system-prompt", { path }),
 
   listAgents: () => request<AgentDTO[]>("GET", "/agents"),
-  createAgent: (name?: string) => request<AgentDTO>("POST", "/agents", name ? { name } : {}),
+  createAgent: (name?: string, projectId?: string) =>
+    request<AgentDTO>("POST", "/agents", { name, project_id: projectId }),
   closeAgent: (id: string) => request<unknown>("DELETE", `/agents/${id}`),
   patchAgent: (id: string, patch: PatchAgentDTO) =>
     request<AgentDTO>("PATCH", `/agents/${id}`, patch),
   getMessages: (id: string) => request<MessageDTO[]>(`GET`, `/agents/${id}/messages`),
   clearMessages: (id: string) => request<unknown>("DELETE", `/agents/${id}/messages`),
 
-  listSessions: (params?: { limit?: number; offset?: number }) => {
+  listSessions: (params?: { limit?: number; offset?: number; project_id?: string }) => {
     const qs = new URLSearchParams();
     if (params?.limit !== undefined) qs.set("limit", String(params.limit));
     if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params?.project_id !== undefined) qs.set("project_id", params.project_id);
     const query = qs.size > 0 ? "?" + qs.toString() : "";
     return request<SessionInfoDTO[]>("GET", `/sessions${query}`);
   },
@@ -84,6 +93,16 @@ export const api = {
   renameSession: (sessionId: string, title: string) =>
     request<{ ok: boolean }>("PATCH", `/sessions/${sessionId}`, { title }),
 
+  // --- проекты (Слой 1) ---
+
+  listProjects: () => request<ProjectDTO[]>("GET", "/projects"),
+  createProject: (name: string) =>
+    request<ProjectDTO>("POST", "/projects", { name }),
+  getProject: (id: string) => request<ProjectDTO>("GET", `/projects/${id}`),
+  renameProject: (id: string, name: string) =>
+    request<ProjectDTO>("PATCH", `/projects/${id}`, { name }),
+  deleteProject: (id: string) => request<{ ok: boolean }>("DELETE", `/projects/${id}`),
+
   cancel: (id: string) => request<unknown>("POST", `/agents/${id}/cancel`),
 
   // --- память ---
@@ -96,19 +115,21 @@ export const api = {
   forkAt: (id: string, messageIndex: number) =>
     request<ForkResponseDTO>("POST", `/agents/${id}/fork`, { message_index: messageIndex }),
 
-  /** Долговременная память: содержимое + записи. */
-  getLongterm: () => request<LongTermDTO>("GET", "/longterm"),
+  /** Долговременная память проекта: содержимое + записи. */
+  getLongterm: (projectId?: string) =>
+    request<LongTermDTO>("GET", `/longterm${query(projectId)}`),
 
-  /** Добавить знание в долговременную память. */
-  remember: (content: string) =>
-    request<LongTermDTO>("POST", "/longterm", { content }),
+  /** Добавить знание в долговременную память проекта. */
+  remember: (content: string, projectId?: string) =>
+    request<LongTermDTO>("POST", `/longterm${query(projectId)}`, { content }),
 
-  /** Удалить запись долговременной памяти по индексу. */
-  forget: (index: number) => request<LongTermDTO>("DELETE", `/longterm/${index}`),
+  /** Удалить запись долговременной памяти проекта по индексу. */
+  forget: (index: number, projectId?: string) =>
+    request<LongTermDTO>("DELETE", `/longterm/${index}${query(projectId)}`),
 
-  /** Заменить запись долговременной памяти по индексу. */
-  updateLongterm: (index: number, content: string) =>
-    request<LongTermDTO>("PUT", `/longterm/${index}`, { content }),
+  /** Заменить запись долговременной памяти проекта по индексу. */
+  updateLongterm: (index: number, content: string, projectId?: string) =>
+    request<LongTermDTO>("PUT", `/longterm/${index}${query(projectId)}`, { content }),
 
   /** Принять предложение агента (memory_suggestion) — знание уходит в долгосрочную память. */
   acceptSuggestion: (id: string) => request<LongTermDTO>("POST", `/agents/${id}/memory-suggestion/accept`),

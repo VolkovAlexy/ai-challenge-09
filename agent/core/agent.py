@@ -33,7 +33,7 @@ from agent.core.message import (
 )
 from agent.llm.client import LLMClient, LLMError
 from agent.memory.facts import FactsExtractor
-from agent.memory.longterm import LongTermMemory
+from agent.memory.longterm import LongTermSource
 from agent.memory.session import InMemorySession, SessionData, save_session
 from agent.tools.registry import ToolRegistry
 from agent.tools.scratchpad import parse_tool_arguments, scratchpad_tools
@@ -108,11 +108,13 @@ class Agent:
         llm: LLMClient,
         config: Config,
         tools: ToolRegistry | None = None,
-        longterm: LongTermMemory | None = None,
+        longterm: LongTermSource | None = None,
+        project_id: str = "",
     ) -> None:
         self.name = name
         self.settings = settings
         self.system_prompt = system_prompt
+        self.project_id = project_id
         self.memory = InMemorySession()
         self.context_builder = ContextBuilder()
         self._llm = llm
@@ -124,7 +126,7 @@ class Agent:
             self._tools.register(tool)
         for tool in scratchpad_tools(self.memory):
             self._tools.register(tool)
-        # долговременная память: общий markdown-файл (LONGTERM_MEMORY.md)
+        # долговременная память: уровень проекта (своя у каждого проекта)
         self._longterm = longterm
         self._task: asyncio.Task[str] | None = None
         self._stream_text = ""
@@ -243,7 +245,7 @@ class Agent:
         последние N сообщений. История агента хранится целиком (чат не
         меняется), в запрос уходит только проекция через ContextBuilder.
         Поверх системного промпта добавляются долговременная память
-        (LONGTERM_MEMORY.md, общая для всех агентов) и рабочая память
+        (уровень проекта, своя у каждого проекта) и рабочая память
         текущей задачи (scratchpad).
         """
         longterm_raw = self._longterm.load() if self._longterm is not None else ""
@@ -739,3 +741,8 @@ class Agent:
     def set_system_prompt_file(self, path: str) -> None:
         """Заменяет системный промпт содержимым файла (FileNotFoundError пробрасывается)."""
         self.system_prompt = Path(path).read_text(encoding="utf-8")
+
+    def set_project(self, project_id: str, longterm: LongTermSource | None) -> None:
+        """Перевязывает агента на другой проект (меняется его долговременная память)."""
+        self.project_id = project_id
+        self._longterm = longterm
