@@ -19,11 +19,20 @@ const threshold = computed(() => configStore.config?.compaction_threshold ?? 0.6
 
 const overThreshold = computed(() => pct.value > threshold.value);
 
+/** спиннер во время стрима — поверх информации о контексте, без слова «стрим» */
+const showSpinner = computed(
+  () =>
+    agent.value !== null &&
+    agent.value.streaming &&
+    !agent.value.cancelled &&
+    !agent.value.compacting,
+);
+
 const statusText = computed(() => {
   const a = agent.value;
   if (a === null) return "";
   if (a.compacting) return "сжимаю контекст…";
-  if (a.streaming) return a.cancelled ? "останавливаю…" : "стрим…";
+  if (a.streaming && a.cancelled) return "останавливаю…";
   return "";
 });
 </script>
@@ -31,22 +40,21 @@ const statusText = computed(() => {
 <template>
   <div v-if="agent" class="statusbar">
     <div class="st-left">
+      <span v-if="showSpinner" class="st-spinner" />
       <span v-if="statusText !== ''" class="st-status">{{ statusText }}</span>
-      <template v-else>
-        <span>контекст</span>
-        <span class="st-context" :class="{ warn: overThreshold }">
-          {{ agent.contextUsed }}/{{ agent.contextWindow }}
-        </span>
-        <n-progress
-          type="line"
-          :percentage="Math.round(pct * 100)"
-          :color="overThreshold ? '#e0af68' : '#7aa2f7'"
-          :height="4"
-          :border-radius="2"
-          :show-indicator="false"
-          style="width: 60px; min-width: 40px;"
-        />
-      </template>
+      <span>контекст</span>
+      <span class="st-context" :class="{ warn: overThreshold }">
+        {{ agent.contextUsed }}/{{ agent.contextWindow }}
+      </span>
+      <n-progress
+        type="line"
+        :percentage="Math.round(pct * 100)"
+        :color="overThreshold ? '#e0af68' : '#7aa2f7'"
+        :height="4"
+        :border-radius="2"
+        :show-indicator="false"
+        style="width: 60px; min-width: 40px;"
+      />
     </div>
     <slot />
     <div class="st-right">
@@ -58,3 +66,22 @@ const statusText = computed(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.st-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: statusbar-spin 0.8s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes statusbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

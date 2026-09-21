@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { NButton } from "naive-ui";
 import { useAgentsStore } from "@/stores/agents";
 import MessageItem from "./MessageItem.vue";
-import MessageContextMenu, { type MenuItem } from "./MessageContextMenu.vue";
-import type { MessageDTO } from "@/api/types";
 
 const store = useAgentsStore();
 
@@ -14,31 +12,21 @@ const history = computed(() => agent.value?.history ?? []);
 const container = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
 
-// --- контекстное меню сообщения ---
-const menu = ref<{ index: number; x: number; y: number } | null>(null);
-
-const menuItems = computed<MenuItem[]>(() => {
-  if (menu.value === null) return [];
-  const message: MessageDTO | undefined = history.value[menu.value.index];
-  if (message === undefined) return [];
-  const items: MenuItem[] = [];
-  if (message.role === "user" || message.role === "assistant") {
-    items.push({ id: "branch", label: "Ветка отсюда" });
-  }
-  if (message.role === "user") {
-    items.push({ id: "remember", label: "Запомнить (долговременная память)" });
-  }
-  items.push({ id: "copy", label: "Копировать текст" });
-  return items;
+// --- автоскролл вниз только когда пользователь у нижнего края (§7.3) ---
+// Сигнатура последнего сообщения меняется на каждый апдейт стрима/размышлений.
+const listSignature = computed(() => {
+  const last = history.value[history.value.length - 1];
+  return `${history.value.length}:${last?.content.length ?? 0}:${last?.reasoning?.length ?? 0}`;
 });
 
-function onMenu(index: number, pos: { x: number; y: number }): void {
-  menu.value = { index, x: pos.x, y: pos.y };
-}
+watch(listSignature, () => {
+  if (atBottom.value) {
+    void nextTick(() => container.value?.scrollTo({ top: container.value.scrollHeight }));
+  }
+});
 
-async function onMenuSelect(action: string): Promise<void> {
-  if (menu.value === null) return;
-  const index = menu.value.index;
+// --- действия под сообщением (branch/remember/copy) ---
+async function onAction(index: number, action: string): Promise<void> {
   const message = history.value[index];
   const agentId = agent.value?.id;
   if (message === undefined || agentId === undefined) return;
@@ -96,7 +84,11 @@ defineExpose({ scrollDown });
       История пуста — напишите что-нибудь или введите /help
     </div>
     <template v-for="(m, i) in history" :key="m.id + i">
-      <MessageItem :message="m" @menu="(pos) => onMenu(i, pos)" />
+      <MessageItem
+        :message="m"
+        :live="i === history.length - 1 && agent?.streaming === true"
+        @action="(action) => onAction(i, action)"
+      />
       <div
         v-if="i === history.length - 1 && agent?.compactionNote"
         class="msg-note compaction"
@@ -106,7 +98,7 @@ defineExpose({ scrollDown });
     </template>
     <div v-if="agent?.compacting" class="loader">сжимаю контекст…</div>
     <div v-else-if="agent?.streaming && history.at(-1)?.role !== 'assistant'" class="loader">
-      …думаю
+      <span class="loader-spinner" />
     </div>
     <n-button
       v-if="!atBottom"
@@ -117,13 +109,24 @@ defineExpose({ scrollDown });
     >
       Вниз ↓
     </n-button>
-    <MessageContextMenu
-      v-if="menu !== null"
-      :x="menu.x"
-      :y="menu.y"
-      :items="menuItems"
-      @select="onMenuSelect"
-      @close="menu = null"
-    />
   </div>
 </template>
+
+<style scoped>
+.loader-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  border: 2px solid transparent;
+  border-top-color: var(--n-primary-color, #7aa2f7);
+  border-radius: 50%;
+  animation: msglist-spin 0.8s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes msglist-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

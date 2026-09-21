@@ -38,6 +38,7 @@ export function useChatStream(agentId: () => string | null, onEvent?: (ev: Strea
     state.streaming = true;
     state.cancelled = false;
     state.compactionNote = null;
+    state.streamingReasoning = "";
     try {
       for await (const ev of api.sendMessage(id, text)) {
         if (ev.event === "delta") {
@@ -46,10 +47,13 @@ export function useChatStream(agentId: () => string | null, onEvent?: (ev: Strea
           continue; // дельты попадают в стор только через flush
         }
         applyNonDelta(state, ev);
-        if (ev.event === "done" || ev.event === "cancelled") buffer = ""; // финал уже в истории
-        else if (ev.event === "tool_message") {
+        if (ev.event === "done" || ev.event === "cancelled") {
+          buffer = ""; // финал уже в истории
+          state.streamingReasoning = "";
+        } else if (ev.event === "tool_message") {
           flush(); // текст прошлого раунда уже заменён авторитетным сообщением
           buffer = ""; // дельты нового раунда начинаются с нуля
+          state.streamingReasoning = "";
         } else if (ev.event === "error") flush();
         onEvent?.(ev);
       }
@@ -67,6 +71,7 @@ export function useChatStream(agentId: () => string | null, onEvent?: (ev: Strea
       }
       state.streaming = false;
       state.compacting = false;
+      state.streamingReasoning = "";
       buffer = "";
       target = null;
     }

@@ -119,6 +119,7 @@ export type StreamEvent =
   | { event: "compaction_started" }
   | { event: "compaction_done"; removed: number; summary_tokens: number; pct_before: number; pct_after: number }
   | { event: "delta"; content: string }
+  | { event: "reasoning_delta"; content: string }
   | { event: "tool_message"; message: MessageDTO }
   | { event: "scratchpad"; content: string }
   | { event: "done"; message: MessageDTO }

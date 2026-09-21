@@ -36,6 +36,7 @@ function agentState(overrides: Partial<AgentState> = {}): AgentState {
     scratchpad: "",
     memorySuggestion: null,
     activeProfileId: "",
+    streamingReasoning: "",
     sessionId: null,
     tokensIn: 5000,
     tokensOut: 1200,
@@ -57,15 +58,14 @@ beforeEach(() => {
 });
 
 describe("StatusBar", () => {
-  it("формат строки: контекст, счётчики слева; T, top-p, max справа", () => {
+  it("формат строки: контекст, счётчики слева; T справа", () => {
     seed(agentState(), 0.6);
     const text = mount(StatusBar).text();
-    expect(text).toContain("context");
+    expect(text).toContain("контекст");
     expect(text).toContain("T 0.7");
-    expect(text).toContain("top-p 1");
-    expect(text).toContain("max 4096");
-    expect(text).toContain("12345/32768 (38%)");
-    expect(text).toContain("in 5000 out 1200 Σ 6200");
+    expect(text).toContain("12345/32768");
+    expect(text).toContain("in 5000");
+    expect(text).toContain("out 1200");
   });
 
   it("жёлтый индикатор при превышении порога", () => {
@@ -78,10 +78,19 @@ describe("StatusBar", () => {
     expect(mount(StatusBar).find(".st-context").classes()).not.toContain("warn");
   });
 
-  it("индикатор состояния: стрим и сжатие", () => {
+  it("при стриме — спиннер, контекст всегда виден, без слова «стрим»", () => {
     seed(agentState({ streaming: true }), 0.6);
-    expect(mount(StatusBar).text()).toContain("стрим");
+    const stream = mount(StatusBar);
+    expect(stream.find(".st-spinner").exists()).toBe(true);
+    expect(stream.text()).not.toContain("стрим");
+    expect(stream.text()).toContain("контекст");
+    expect(stream.text()).toContain("12345/32768");
+  });
+
+  it("при сжатии — статус «сжимаю контекст», без спиннера стрима", () => {
     seed(agentState({ compacting: true }), 0.6);
-    expect(mount(StatusBar).text()).toContain("сжимаю контекст");
+    const compaction = mount(StatusBar);
+    expect(compaction.text()).toContain("сжимаю контекст");
+    expect(compaction.find(".st-spinner").exists()).toBe(false);
   });
 });

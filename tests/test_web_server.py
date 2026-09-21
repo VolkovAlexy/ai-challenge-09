@@ -339,3 +339,50 @@ async def test_rename_session_sets_title() -> None:
         sessions = (await client.get("/api/sessions")).json()
         assert sessions[0]["title"] == "Мой заголовок"
 
+
+async def test_sse_streams_reasoning_delta_to_done() -> None:
+    world = build_world(
+        [
+            ChatChunk(reasoning="думаю"),
+            ChatChunk(reasoning=" ещё"),
+            ChatChunk(content="ответ"),
+            ChatChunk(finish_reason="stop"),
+        ],
+        delay=0.05,
+    )
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        agent_id = body["id"]
+        async with client.stream(
+            "POST", f"/api/agents/{agent_id}/messages", json={"content": "вопрос"}
+        ) as resp:
+            assert resp.status_code == 200
+            events = await collect_sse(resp)
+    reasoning = "".join(
+        payload["content"] for name, payload in events if name == "reasoning_delta"
+    )
+    deltas = "".join(payload["content"] for name, payload in events if name == "delta")
+    done = [payload for name, payload in events if name == "done"]
+    assert len(done) == 1
+    # размышления уходят в стрим отдельным событием и в done-сообщении
+    assert reasoning == done[0]["message"]["reasoning"] == "думаю ещё"
+    assert deltas == done[0]["message"]["content"] == "ответ"
+
+
+async def test_history_messages_include_reasoning() -> None:
+    world = build_world(
+        [ChatChunk(reasoning="шаг 1"), ChatChunk(content="отв"), ChatChunk(finish_reason="stop")],
+        delay=0.05,
+    )
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        agent_id = body["id"]
+        async with client.stream(
+            "POST", f"/api/agents/{agent_id}/messages", json={"content": "вопрос"}
+        ) as resp:
+            await collect_sse(resp)
+        msgs = (await client.get(f"/api/agents/{agent_id}/messages")).json()
+        assert msgs[0]["reasoning"] is None  # user-сообщение без размышлений
+        assert msgs[1]["reasoning"] == "шаг 1"
+
+

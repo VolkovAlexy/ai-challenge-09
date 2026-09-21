@@ -150,6 +150,32 @@ describe("agents store", () => {
     expect(state?.history[1]).toEqual({ id: "m2", role: "assistant", content: "Ответ" });
   });
 
+  it("reasoning_delta копится в стрим-сообщение и переносится в done", async () => {
+    const dto = agentDTO();
+    mockFetch(
+      new Map([
+        ["POST /agents", () => new Response(JSON.stringify(dto), { status: 200 })],
+        [
+          `POST /agents/${dto.id}/messages`,
+          () =>
+            sseResponse([
+              { event: "user_message", message: { id: "m1", role: "user", content: "в" } },
+              { event: "reasoning_delta", content: "думаю" },
+              { event: "reasoning_delta", content: " ещё" },
+              { event: "delta", content: "Ответ" },
+              { event: "done", message: { id: "m2", role: "assistant", content: "Ответ", reasoning: "думаю ещё" } },
+            ]),
+        ],
+      ]),
+    );
+    const store = useAgentsStore();
+    await store.createAgent();
+    await store.runStream(dto.id, "в");
+    const state = store.agents[dto.id];
+    expect(state?.history[1]?.reasoning).toBe("думаю ещё");
+    expect(state?.streamingReasoning).toBe("");
+  });
+
   it("compaction events выставляют compacting и заметку", async () => {
     const dto = agentDTO();
     const events: StreamEvent[] = [

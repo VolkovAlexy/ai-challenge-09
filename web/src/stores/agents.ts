@@ -37,6 +37,8 @@ export interface AgentState {
   memorySuggestion: string | null;
   /** активный профиль роли чата ("" — без него) */
   activeProfileId: string;
+  /** живой стрим размышлений thinking-модели (копится до done/tool_message) */
+  streamingReasoning: string;
   /** ID загруженной сессии (если агент восстановлен из сессии) */
   sessionId: string | null;
   tokensIn: number;
@@ -65,6 +67,7 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     scratchpad: dto.scratchpad ?? "",
     memorySuggestion: dto.memory_suggestion ?? null,
     activeProfileId: dto.active_profile_id ?? "",
+    streamingReasoning: "",
     sessionId: null,
     tokensIn: 0,
     tokensOut: 0,
@@ -227,6 +230,7 @@ export const useAgentsStore = defineStore("agents", () => {
     state.streaming = true;
     state.cancelled = false;
     state.compactionNote = null;
+    state.streamingReasoning = "";
     aborts.set(id, new AbortController());
     let streamText = "";
     try {
@@ -238,6 +242,7 @@ export const useAgentsStore = defineStore("agents", () => {
           applyStreamEvent(state, ev);
           if (ev.event === "done" || ev.event === "tool_message") {
             streamText = ""; // финал/артефакт уже в истории; новый раунд — с нуля
+            state.streamingReasoning = "";
           }
         }
         onEvent?.(ev);
@@ -252,6 +257,7 @@ export const useAgentsStore = defineStore("agents", () => {
     } finally {
       state.streaming = false;
       state.compacting = false;
+      state.streamingReasoning = "";
       aborts.delete(id);
     }
   }
@@ -402,6 +408,11 @@ export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
         `⇄ Контекст сжат: -${ev.removed} удалено, +${ev.summary_tokens} саммари ` +
         `(${Math.round(ev.pct_before * 100)}% → ${Math.round(ev.pct_after * 100)}%)`;
       break;
+    case "reasoning_delta":
+      // размышления thinking-модели: копим и складываем в стрим-сообщение
+      state.streamingReasoning += ev.content;
+      reasoningToStream(state, state.streamingReasoning);
+      break;
     case "tool_message":
       // артефакт tool-раунда (assistant с tool_calls или результат инструмента):
       // replace стрим-заглушки либо push — порядок истории совпадает с бэкендом
@@ -433,6 +444,16 @@ function applyDelta(state: AgentState, fullText: string): void {
     state.history.push({ id: `stream-${state.id}`, role: "assistant", content: fullText });
   } else {
     last.content = fullText;
+  }
+}
+
+/** Размышления пишутся в существующее стрим-сообщение или открывают новое (до контента). */
+function reasoningToStream(state: AgentState, reasoning: string): void {
+  const last = state.history[state.history.length - 1];
+  if (last !== undefined && last.role === "assistant") {
+    last.reasoning = reasoning;
+  } else {
+    state.history.push({ id: `stream-${state.id}`, role: "assistant", content: "", reasoning });
   }
 }
 

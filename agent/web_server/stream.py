@@ -119,6 +119,7 @@ async def agent_stream(
         return
 
     sent = ""
+    reasoning_sent = ""
     compaction_active = False
     scratchpad_sent = agent.memory.scratchpad
 
@@ -151,6 +152,13 @@ async def agent_stream(
             if len(full) > len(sent):
                 yield _sse("delta", {"content": full[len(sent) :]})
                 sent = full
+            reason_full = agent.streaming_reasoning
+            if len(reason_full) < len(reasoning_sent):
+                # новый раунд: размышления начались заново
+                reasoning_sent = ""
+            if len(reason_full) > len(reasoning_sent):
+                yield _sse("reasoning_delta", {"content": reason_full[len(reasoning_sent) :]})
+                reasoning_sent = reason_full
             await asyncio.sleep(POLL_INTERVAL)
 
         # финальный дрен: tool-артефакты конца хода уходят до done
@@ -173,6 +181,10 @@ async def agent_stream(
             if len(full) > len(sent):  # дозакрываем последний дельт-хвост до done
                 yield _sse("delta", {"content": full[len(sent) :]})
                 sent = full
+            reason_full = agent.memory.history[-1].reasoning or ""
+            if len(reason_full) > len(reasoning_sent):  # дозакрываем reasoning до done
+                yield _sse("reasoning_delta", {"content": reason_full[len(reasoning_sent) :]})
+                reasoning_sent = reason_full
             message = agent.memory.history[-1]
             idx = len(agent.memory.history) - 1
             usage = state.usage_dto(agent.last_usage)

@@ -24,6 +24,8 @@ class MessageDTO(BaseModel):
     id: str
     role: str
     content: str
+    # размышления thinking-моделей (стриминг в UI, в API-проекцию не уходят)
+    reasoning: str | None = None
     usage: UsageDTO | None = None
     error: dict[str, str] | None = None
     # имя инструмента для роли tool (результат чьего вызова)

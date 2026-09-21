@@ -428,6 +428,7 @@ class WebState:
             id=f"m{idx}",
             role=message.role.value,
             content=message.content or "",
+            reasoning=message.reasoning,
             usage=usage,
             tool_name=message.name,
             tool_calls=(
