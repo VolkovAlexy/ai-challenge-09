@@ -162,6 +162,11 @@ def create_app(state: WebState) -> FastAPI:
             except OSError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             record.system_prompt_path = body.system_prompt_path
+        if body.active_profile_id is not None:
+            try:
+                state.set_active_profile(record.agent_id, body.active_profile_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         state.set_active(agent_id)
         state.persist(record)
         return state.agent_dto(record)
@@ -343,6 +348,60 @@ def create_app(state: WebState) -> FastAPI:
         if not state.delete_project(project_id):
             raise HTTPException(status_code=404, detail="проект не найден")
         return {"ok": True}
+
+    # --- профили (глобальный пул + привязка к проекту) ---
+
+    @app.get("/api/profiles")
+    def list_profiles() -> list[dto.ProfileDTO]:
+        return state.list_profiles()
+
+    @app.post("/api/profiles")
+    def create_profile(body: dto.ProfileRequest) -> dto.ProfileDTO:
+        try:
+            return state.create_profile(body.name, body.content)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/profiles/{profile_id}")
+    def get_profile(profile_id: str) -> dto.ProfileDTO:
+        profile = state.get_profile(profile_id)
+        if profile is None:
+            raise HTTPException(status_code=404, detail="профиль не найден")
+        return profile
+
+    @app.patch("/api/profiles/{profile_id}")
+    def patch_profile(profile_id: str, body: dto.PatchProfileRequest) -> dto.ProfileDTO:
+        existing = state.get_profile(profile_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="профиль не найден")
+        name = body.name if body.name is not None else existing.name
+        content = body.content if body.content is not None else existing.content
+        try:
+            return state.update_profile(profile_id, name, content)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/profiles/{profile_id}")
+    def delete_profile(profile_id: str) -> dict[str, bool]:
+        if not state.delete_profile(profile_id):
+            raise HTTPException(status_code=404, detail="профиль не найден")
+        return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/profiles")
+    def get_project_profiles(project_id: str) -> list[dto.ProfileDTO]:
+        try:
+            return state.project_profiles_dto(project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/projects/{project_id}/profiles")
+    def put_project_profiles(
+        project_id: str, body: dto.ProjectProfilesRequest
+    ) -> list[dto.ProfileDTO]:
+        try:
+            return state.set_project_profile_ids(project_id, body.profile_ids)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # --- предложение памяти (MEMORY_SUGGESTION) ---
 

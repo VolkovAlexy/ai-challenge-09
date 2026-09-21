@@ -35,6 +35,8 @@ export interface AgentState {
   scratchpad: string;
   /** предложение агента сохранить знание в долговременную память */
   memorySuggestion: string | null;
+  /** активный профиль роли чата ("" — без него) */
+  activeProfileId: string;
   /** ID загруженной сессии (если агент восстановлен из сессии) */
   sessionId: string | null;
   tokensIn: number;
@@ -62,6 +64,7 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     compactionNote: null,
     scratchpad: dto.scratchpad ?? "",
     memorySuggestion: dto.memory_suggestion ?? null,
+    activeProfileId: dto.active_profile_id ?? "",
     sessionId: null,
     tokensIn: 0,
     tokensOut: 0,
@@ -122,6 +125,7 @@ export const useAgentsStore = defineStore("agents", () => {
     state.contextWindow = dto.context_window;
     state.scratchpad = dto.scratchpad ?? state.scratchpad;
     if (dto.memory_suggestion !== undefined) state.memorySuggestion = dto.memory_suggestion;
+    if (dto.active_profile_id !== undefined) state.activeProfileId = dto.active_profile_id;
     if (existing === undefined) {
       agents.value[dto.id] = state;
       order.value.push(dto.id);

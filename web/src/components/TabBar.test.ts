@@ -11,7 +11,7 @@ function seedStore(): void {
     settings: { temperature: 0.7, top_p: 1, max_tokens: 1, stop: [] },
     systemPromptPath: "p", systemPromptContent: "s",
     history: [], streaming: true, compacting: false, cancelled: false, compactionNote: null,
-    scratchpad: "", memorySuggestion: null,
+    scratchpad: "", memorySuggestion: null, activeProfileId: "",
     sessionId: null, tokensIn: 0, tokensOut: 0, contextUsed: 0, contextWindow: 0,
   };
   store.agents["a2"] = {
@@ -19,7 +19,7 @@ function seedStore(): void {
     settings: { temperature: 0.7, top_p: 1, max_tokens: 1, stop: [] },
     systemPromptPath: "p", systemPromptContent: "s",
     history: [], streaming: false, compacting: false, cancelled: false, compactionNote: null,
-    scratchpad: "", memorySuggestion: null,
+    scratchpad: "", memorySuggestion: null, activeProfileId: "",
     sessionId: null,
     tokensIn: 0, tokensOut: 0, contextUsed: 0, contextWindow: 0,
   };

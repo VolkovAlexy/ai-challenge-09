@@ -9,6 +9,7 @@ import type {
   LongTermDTO,
   MessageDTO,
   PatchAgentDTO,
+  ProfileDTO,
   ProjectDTO,
   SessionInfoDTO,
   StreamEvent,
@@ -102,6 +103,19 @@ export const api = {
   renameProject: (id: string, name: string) =>
     request<ProjectDTO>("PATCH", `/projects/${id}`, { name }),
   deleteProject: (id: string) => request<{ ok: boolean }>("DELETE", `/projects/${id}`),
+
+  // --- профили (глобальный пул + привязка к проекту) ---
+
+  listProfiles: () => request<ProfileDTO[]>("GET", "/profiles"),
+  createProfile: (name: string, content: string) =>
+    request<ProfileDTO>("POST", "/profiles", { name, content }),
+  updateProfile: (id: string, patch: { name?: string; content?: string }) =>
+    request<ProfileDTO>("PATCH", `/profiles/${id}`, patch),
+  deleteProfile: (id: string) => request<{ ok: boolean }>("DELETE", `/profiles/${id}`),
+  getProjectProfiles: (projectId: string) =>
+    request<ProfileDTO[]>("GET", `/projects/${projectId}/profiles`),
+  setProjectProfiles: (projectId: string, profileIds: string[]) =>
+    request<ProfileDTO[]>("PUT", `/projects/${projectId}/profiles`, { profile_ids: profileIds }),
 
   cancel: (id: string) => request<unknown>("POST", `/agents/${id}/cancel`),
 

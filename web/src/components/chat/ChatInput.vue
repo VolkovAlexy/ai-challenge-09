@@ -9,12 +9,15 @@ const props = defineProps<{
   streaming: boolean;
   modelIds: () => string[];
   currentModel: string | null;
+  profileOptions: { label: string; value: string }[];
+  currentProfile: string | null;
 }>();
 
 const emit = defineEmits<{
   send: [text: string];
   stop: [];
   modelChange: [model: string];
+  profileChange: [profileId: string];
 }>();
 
 const text = ref("");
@@ -25,6 +28,8 @@ const menuOpen = computed(() => menuItems.value.length > 0);
 const modelOptions = computed(() =>
   props.modelIds().map((m) => ({ label: m, value: m })),
 );
+
+const profileValue = computed(() => props.currentProfile ?? "");
 
 const menuItems = computed<string[]>(() => {
   const t = text.value;
@@ -67,7 +72,14 @@ function onKeydown(ev: KeyboardEvent): void {
     return;
   }
   if (ev.key === "Tab") {
-    const variants = completeInput(props.commands, { modelIds: props.modelIds }, text.value);
+    const variants = completeInput(
+      props.commands,
+      {
+        modelIds: props.modelIds,
+        profileOptions: () => props.profileOptions.map((o) => ({ id: o.value, name: o.label })),
+      },
+      text.value,
+    );
     if (variants.length > 0) {
       ev.preventDefault();
       text.value = `${variants[menuIndex.value % variants.length]} `;
@@ -124,6 +136,16 @@ function onKeydown(ev: KeyboardEvent): void {
             placeholder="Модель"
             style="width: 200px;"
             @update:value="(v: string) => emit('modelChange', v)"
+          />
+          <n-select
+            :value="profileValue"
+            :options="props.profileOptions"
+            size="small"
+            placeholder="Профиль"
+            style="width: 200px;"
+            clearable
+            :disabled="profileOptions.length === 0"
+            @update:value="(v: string | null) => emit('profileChange', v ?? '')"
           />
         </div>
         <div class="chatinput-foot-right">

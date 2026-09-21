@@ -63,6 +63,15 @@ class AgentDTO(BaseModel):
     project_id: str = ""  # проект, которому принадлежит агент (и его сессия)
     scratchpad: str = ""  # рабочая память текущей задачи
     memory_suggestion: str | None = None  # предложение сохранить знание (ждёт решения UI)
+    active_profile_id: str = ""  # активный профиль роли чата ("" — без него)
+
+
+class ProfileDTO(BaseModel):
+    """Глобальный профиль роли: имя + текст (обогащает/переопределяет базовый промпт)."""
+
+    id: str
+    name: str
+    content: str
 
 
 class LongTermDTO(BaseModel):
@@ -81,6 +90,7 @@ class ProjectDTO(BaseModel):
     name: str
     session_count: int
     updated_at: str
+    profile_ids: list[str] = []  # профили, привязанные к проекту
 
 
 class ProviderDTO(BaseModel):
@@ -151,6 +161,25 @@ class PatchAgentRequest(BaseModel):
     max_tokens: int | None = None
     stop: list[str] | None = None
     system_prompt_path: str | None = None
+    active_profile_id: str | None = None
+
+
+class ProfileRequest(BaseModel):
+    """Создание профиля: имя + текст роли."""
+
+    name: str
+    content: str
+
+
+class PatchProfileRequest(BaseModel):
+    name: str | None = None
+    content: str | None = None
+
+
+class ProjectProfilesRequest(BaseModel):
+    """Набор профилей проекта (полная замена привязки)."""
+
+    profile_ids: list[str]
 
 
 class SystemPromptPutRequest(BaseModel):

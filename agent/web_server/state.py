@@ -16,7 +16,7 @@ from agent.core.agent import Agent, AgentBusyError, TokenUsage
 from agent.core.message import Message, Role
 from agent.llm.client import LLMClient
 from agent.memory.longterm import LongTermSource, ProjectLongTermMemory
-from agent.memory.persistence import ProjectInfo, SessionStore
+from agent.memory.persistence import ProfileInfo, ProjectInfo, SessionStore
 from agent.tools.registry import ToolRegistry
 from agent.web_server.dto import (
     AgentDTO,
@@ -25,6 +25,7 @@ from agent.web_server.dto import (
     ConfigDTO,
     LongTermDTO,
     MessageDTO,
+    ProfileDTO,
     ProjectDTO,
     ProviderDTO,
     SessionInfoDTO,
@@ -191,6 +192,7 @@ class WebState:
             session_id=self.store.new_id(),
             project_id=project_id,
         )
+        self._apply_profile_content(record)
         self._records[agent_id] = record
         self.active_agent_id = agent_id
         self.persist(record)
@@ -207,11 +209,24 @@ class WebState:
         project_id = self.store.get_project_id(session_id) or self.default_project_id
         record.agent.set_project(project_id, ProjectLongTermMemory(self.store, project_id))
         record.agent.apply_session(data)
+        self._apply_profile_content(record)
         record.session_id = session_id
         record.project_id = project_id
         self.set_active(agent_id)
         self.persist(record)
         return record
+
+    def _apply_profile_content(self, record: AgentRecord) -> None:
+        """Подтягивает текст активного профиля агента из store в `profile_content`."""
+        profile_id = record.agent.active_profile_id
+        if not profile_id:
+            record.agent.set_active_profile("", "")
+            return
+        profile = self.store.get_profile(profile_id)
+        if profile is None:
+            record.agent.set_active_profile("", "")
+            return
+        record.agent.set_active_profile(profile_id, profile.content)
 
     # --- персист (аналог TUI _persist_tab/_tick) ---
 
@@ -240,6 +255,7 @@ class WebState:
             len(memory.branches),
             tuple(sorted(memory.facts.items())),
             memory.scratchpad,
+            agent.active_profile_id,
         )
 
     def persist(self, record: AgentRecord) -> None:
@@ -257,6 +273,7 @@ class WebState:
             active_branch=agent.memory.active_branch,
             branches=agent.memory.branches,
             project_id=agent.project_id,
+            active_profile_id=agent.active_profile_id,
         )
         record.fingerprint = self._fingerprint(record)
 
@@ -357,6 +374,7 @@ class WebState:
             compacting=agent.is_compacting or agent.is_extracting_facts,
             scratchpad=agent.memory.scratchpad,
             memory_suggestion=agent.pending_memory_suggestion,
+            active_profile_id=agent.active_profile_id,
         )
 
     def config_dto(self) -> ConfigDTO:
@@ -456,6 +474,7 @@ class WebState:
             name=info.name,
             session_count=info.session_count,
             updated_at=info.updated_at,
+            profile_ids=self.store.list_project_profiles(info.id),
         )
 
     def list_projects(self) -> list[ProjectDTO]:
@@ -485,3 +504,88 @@ class WebState:
                 self.active_agent_id = None
             return True
         return False
+
+    # --- профили (глобальный пул + привязка к проекту) ---
+
+    @staticmethod
+    def profile_dto(info: ProfileInfo) -> ProfileDTO:
+        return ProfileDTO(id=info.id, name=info.name, content=info.content)
+
+    def list_profiles(self) -> list[ProfileDTO]:
+        return [self.profile_dto(info) for info in self.store.list_profiles()]
+
+    def get_profile(self, profile_id: str) -> ProfileDTO | None:
+        info = self.store.get_profile(profile_id)
+        return self.profile_dto(info) if info is not None else None
+
+    def create_profile(self, name: str, content: str) -> ProfileDTO:
+        try:
+            return self.profile_dto(self.store.create_profile(name, content))
+        except ValueError as exc:
+            raise KeyError(str(exc)) from exc
+
+    def update_profile(self, profile_id: str, name: str, content: str) -> ProfileDTO:
+        try:
+            info = self.store.update_profile(profile_id, name, content)
+        except ValueError as exc:
+            raise KeyError(str(exc)) from exc
+        if info is None:
+            raise KeyError(f"профиль не найден: {profile_id}")
+        return self.profile_dto(info)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        """Удаляет профиль; у агентов, ссылающихся на него, снимает активный профиль."""
+        if not self.store.delete_profile(profile_id):
+            return False
+        for record in self._records.values():
+            if record.agent.active_profile_id == profile_id:
+                record.agent.set_active_profile("", "")
+        return True
+
+    def project_profiles_dto(self, project_id: str) -> list[ProfileDTO]:
+        """Профили, привязанные к проекту."""
+        if self.store.get_project(project_id) is None:
+            raise KeyError(f"проект не найден: {project_id}")
+        profiles: list[ProfileDTO] = []
+        for profile_id in self.store.list_project_profiles(project_id):
+            info = self.store.get_profile(profile_id)
+            if info is not None:
+                profiles.append(self.profile_dto(info))
+        return profiles
+
+    def set_project_profile_ids(self, project_id: str, profile_ids: list[str]) -> list[ProfileDTO]:
+        """Заменяет набор профилей проекта (валидирует их существование)."""
+        if self.store.get_project(project_id) is None:
+            raise KeyError(f"проект не найден: {project_id}")
+        for profile_id in profile_ids:
+            if self.store.get_profile(profile_id) is None:
+                raise KeyError(f"профиль не найден: {profile_id}")
+        self.store.set_project_profiles(project_id, profile_ids)
+        allowed = set(profile_ids)
+        for record in self._records.values():
+            if (
+                record.agent.project_id == project_id
+                and record.agent.active_profile_id
+                and record.agent.active_profile_id not in allowed
+            ):
+                record.agent.set_active_profile("", "")
+        return self.project_profiles_dto(project_id)
+
+    def set_active_profile(self, agent_id: str, profile_id: str) -> AgentRecord:
+        """Назначает агенту активный профиль ("" — снять). Профиль должен быть в проекте."""
+        record = self._records.get(agent_id)
+        if record is None:
+            raise KeyError("агент не найден")
+        if profile_id:
+            if self.store.get_profile(profile_id) is None:
+                raise KeyError(f"профиль не найден: {profile_id}")
+            project_profiles = self.store.list_project_profiles(record.agent.project_id)
+            if profile_id not in project_profiles:
+                raise KeyError("профиль не привязан к проекту агента")
+            profile = self.store.get_profile(profile_id)
+            assert profile is not None
+            record.agent.set_active_profile(profile_id, profile.content)
+        else:
+            record.agent.set_active_profile("", "")
+        self.persist(record)
+        return record

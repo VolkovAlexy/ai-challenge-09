@@ -35,6 +35,7 @@ function agentState(overrides: Partial<AgentState> = {}): AgentState {
     compactionNote: null,
     scratchpad: "",
     memorySuggestion: null,
+    activeProfileId: "",
     sessionId: null,
     tokensIn: 5000,
     tokensOut: 1200,

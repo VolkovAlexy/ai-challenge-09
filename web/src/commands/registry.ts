@@ -5,6 +5,7 @@ import type { CommandDTO } from "@/api/types";
 
 export interface CompletionContext {
   modelIds: () => string[];
+  profileOptions: () => { id: string; name: string }[];
 }
 
 export interface PaletteRequests {
@@ -28,6 +29,7 @@ export interface CommandActions {
   setMaxTokens(n: number): Promise<void>;
   setStop(seqs: string[]): Promise<void>;
   setSystemPromptPath(path: string): Promise<void>;
+  setProfile(profileId: string): Promise<void>;
   clearHistory(): Promise<void>;
   loadSession(sessionId: string): Promise<void>;
   exportSession(path?: string): Promise<string>;
@@ -38,6 +40,7 @@ export interface CommandContext {
   actions: CommandActions;
   modelIds: () => string[];
   currentModel: () => string | null;
+  profileOptions: () => { id: string; name: string }[];
 }
 
 export interface ChatCommand {
@@ -179,6 +182,30 @@ export function buildRegistry(dtos: CommandDTO[]): ChatCommand[] {
           return null;
         }
         await ctx.actions.setSystemPromptPath(args[0]);
+        return null;
+      },
+    },
+    {
+      name: "profile",
+      description: desc("profile", "профиль роли"),
+      args_spec: spec("profile"),
+      complete: (ctx, prefix) =>
+        ctx.profileOptions()
+          .filter((p) => p.name.toLowerCase().startsWith(prefix.toLowerCase()))
+          .map((p) => p.name),
+      run: async (ctx, args) => {
+        if (args.length === 0) return "Использование: /profile <имя|none>";
+        const arg = args.join(" ").toLowerCase();
+        if (arg === "none" || arg === "без профиля") {
+          await ctx.actions.setProfile("");
+          return null;
+        }
+        const found = ctx.profileOptions().find((p) => p.name.toLowerCase() === arg);
+        if (found === undefined) {
+          const names = ctx.profileOptions().map((p) => p.name).join(", ") || "нет";
+          return `Профиль не найден: ${args.join(" ")}. Доступны: ${names}`;
+        }
+        await ctx.actions.setProfile(found.id);
         return null;
       },
     },

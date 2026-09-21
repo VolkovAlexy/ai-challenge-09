@@ -40,12 +40,14 @@ const noopCtx: CommandContext = {
     setMaxTokens: async () => {},
     setStop: async () => {},
     setSystemPromptPath: async () => {},
+    setProfile: async () => {},
     clearHistory: async () => {},
     loadSession: async () => {},
     exportSession: async () => "/x/sessions/export.jsonl",
   },
   modelIds: () => ["ollama:llama3.1", "openai:gpt-4"],
   currentModel: () => "ollama:llama3.1",
+  profileOptions: () => [{ id: "p1", name: "Разработчик" }],
 };
 
 describe("parseCommand", () => {

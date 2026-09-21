@@ -35,7 +35,7 @@ function mountInput(streaming = false) {
         },
       },
     },
-    props: { commands: buildRegistry(dtos), streaming, modelIds: () => ["ollama:llama3.1", "openai:gpt-4"], currentModel: "ollama:llama3.1" },
+    props: { commands: buildRegistry(dtos), streaming, modelIds: () => ["ollama:llama3.1", "openai:gpt-4"], currentModel: "ollama:llama3.1", profileOptions: [], currentProfile: "" },
   });
 }
 

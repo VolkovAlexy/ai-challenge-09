@@ -14,9 +14,12 @@ const props = defineProps<{
   commands: ChatCommand[];
   modelIds: () => string[];
   currentModel: string | null;
+  profileOptions: { label: string; value: string }[];
+  currentProfile: string | null;
   onSend: (text: string) => Promise<void>;
   onStop: () => Promise<void>;
   onModelChange: (model: string) => void;
+  onProfileChange: (profileId: string) => void;
 }>();
 
 const store = useAgentsStore();
@@ -36,9 +39,12 @@ const streaming = computed(() => agent.value?.streaming === true);
           :streaming="streaming"
           :model-ids="props.modelIds"
           :current-model="props.currentModel"
+          :profile-options="props.profileOptions"
+          :current-profile="props.currentProfile"
           @send="props.onSend"
           @stop="props.onStop"
           @model-change="props.onModelChange"
+          @profile-change="props.onProfileChange"
         />
         <StatusBar />
       </div>

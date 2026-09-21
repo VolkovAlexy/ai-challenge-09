@@ -110,11 +110,14 @@ class Agent:
         tools: ToolRegistry | None = None,
         longterm: LongTermSource | None = None,
         project_id: str = "",
+        active_profile_id: str = "",
     ) -> None:
         self.name = name
         self.settings = settings
         self.system_prompt = system_prompt
         self.project_id = project_id
+        self.active_profile_id = active_profile_id  # профиль роли чата ("" — без него)
+        self.profile_content = ""  # текст активного профиля (подтягивается из store)
         self.memory = InMemorySession()
         self.context_builder = ContextBuilder()
         self._llm = llm
@@ -237,6 +240,18 @@ class Agent:
             )
         return estimate_messages(self._projection()), True
 
+    @property
+    def effective_system_prompt(self) -> str:
+        """Системный промпт для LLM: базовый + текст активного профиля (склеивание)."""
+        if self.profile_content:
+            return f"{self.system_prompt}\n\n{self.profile_content}"
+        return self.system_prompt
+
+    def set_active_profile(self, profile_id: str, content: str) -> None:
+        """Назначает активный профиль роли (content — текст профиля, "" — снять его)."""
+        self.active_profile_id = profile_id
+        self.profile_content = content
+
     def _projection(self) -> list[Message]:
         """Сообщения для LLM — согласно стратегии контекста.
 
@@ -254,14 +269,14 @@ class Agent:
         strategy = self.settings.context_strategy
         if strategy == "none":
             return self.context_builder.build_messages(
-                self.system_prompt,
+                self.effective_system_prompt,
                 self.memory.history,
                 longterm=longterm,
                 scratchpad=scratchpad,
             )
         if strategy == "summary":
             return self.context_builder.build_messages(
-                self.system_prompt,
+                self.effective_system_prompt,
                 self.memory.tail,
                 summary=self.memory.summary,
                 longterm=longterm,
@@ -269,7 +284,7 @@ class Agent:
             )
         # sliding / facts: скользящее окно по полной истории
         return self.context_builder.build_messages(
-            self.system_prompt,
+            self.effective_system_prompt,
             apply_sliding_window(self.memory.history, self.settings.sliding_window),
             facts=self.memory.facts or None if strategy == "facts" else None,
             longterm=longterm,
@@ -663,6 +678,7 @@ class Agent:
             facts=self.memory.facts,
             active_branch=self.memory.active_branch,
             branches=self.memory.branches,
+            active_profile_id=self.active_profile_id,
         )
 
     def apply_session(self, data: SessionData) -> None:
@@ -676,6 +692,8 @@ class Agent:
         self.memory.facts = dict(data.facts)
         self.memory.scratchpad = data.scratchpad
         self.memory.restore_branches(data.branches, active=data.active_branch)
+        self.active_profile_id = data.active_profile_id
+        self.profile_content = ""  # текст подтягивается веб-слоем из store
         self._reset_runtime()
 
     # --- ветки диалога ---

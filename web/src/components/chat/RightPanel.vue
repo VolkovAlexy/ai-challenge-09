@@ -5,8 +5,9 @@
 import { ref } from "vue";
 import { NButton, NScrollbar } from "naive-ui";
 import MemoryPanel from "./MemoryPanel.vue";
+import ProfilePanel from "./ProfilePanel.vue";
 
-type Tab = "memory" | "settings" | null;
+type Tab = "memory" | "profiles" | "settings" | null;
 
 const activeTab = ref<Tab>(null);
 
@@ -30,6 +31,15 @@ function toggle(tab: Exclude<Tab, null>): void {
         </n-button>
         <n-button
           class="rp-bar-btn"
+          :class="{ active: activeTab === 'profiles' }"
+          quaternary
+          title="Профили"
+          @click="toggle('profiles')"
+        >
+          <span class="rp-bar-icon" aria-hidden="true">🎭</span>
+        </n-button>
+        <n-button
+          class="rp-bar-btn"
           :class="{ active: activeTab === 'settings' }"
           quaternary
           title="Настройки"
@@ -45,12 +55,13 @@ function toggle(tab: Exclude<Tab, null>): void {
         <div v-if="activeTab !== null" class="rp-body">
           <div class="rp-header">
             <span class="rp-title">
-              {{ activeTab === "memory" ? "Память" : "Настройки" }}
+              {{ activeTab === "memory" ? "Память" : activeTab === "profiles" ? "Профили" : "Настройки" }}
             </span>
           </div>
           <n-scrollbar class="rp-body-scroll">
             <div class="rp-body-content">
               <MemoryPanel v-if="activeTab === 'memory'" :active="true" />
+              <ProfilePanel v-else-if="activeTab === 'profiles'" :active="true" />
               <div v-else class="rp-placeholder">Настройки — следующая итерация</div>
             </div>
           </n-scrollbar>

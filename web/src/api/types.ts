@@ -48,6 +48,8 @@ export interface AgentDTO {
   scratchpad: string;
   /** предложение агента сохранить знание в долговременную память */
   memory_suggestion: string | null;
+  /** активный профиль роли чата ("" — без него) */
+  active_profile_id?: string;
 }
 
 export interface ProviderDTO {
@@ -89,6 +91,15 @@ export interface ProjectDTO {
   name: string;
   session_count: number;
   updated_at: string;
+  /** профили, привязанные к проекту */
+  profile_ids?: string[];
+}
+
+/** Глобальный профиль роли: имя + текст (обогащает/переопределяет базовый промпт). */
+export interface ProfileDTO {
+  id: string;
+  name: string;
+  content: string;
 }
 
 export interface PatchAgentDTO {
@@ -99,6 +110,7 @@ export interface PatchAgentDTO {
   max_tokens?: number;
   stop?: string[];
   system_prompt_path?: string;
+  active_profile_id?: string;
 }
 
 /** События SSE-потока ответа (§5.2). Терминалы: done / cancelled / error. */

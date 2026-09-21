@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import {
   NConfigProvider,
   NMessageProvider,
@@ -17,6 +17,7 @@ import { useAgentsStore } from "@/stores/agents";
 import { useConfigStore } from "@/stores/config";
 import { useSessionsStore } from "@/stores/sessions";
 import { useProjectsStore } from "@/stores/projects";
+import { useProfilesStore } from "@/stores/profiles";
 import { buildRegistry, findCommand, parseCommand, type ChatCommand, type CommandContext } from "@/commands/registry";
 import { useChatStream } from "@/composables/useChatStream";
 import ChatView from "@/components/ChatView.vue";
@@ -32,6 +33,7 @@ const agentsStore = useAgentsStore();
 const configStore = useConfigStore();
 const sessionsStore = useSessionsStore();
 const projectsStore = useProjectsStore();
+const profilesStore = useProfilesStore();
 
 const commandsDTO = ref<CommandDTO[]>([]);
 const registry = ref<ChatCommand[]>([]);
@@ -89,6 +91,16 @@ const stream = useChatStream(
   onStreamEvent,
 );
 
+const activeProjectId = computed(() => agentsStore.activeAgent?.projectId ?? "");
+const profileOptions = computed(() =>
+  profilesStore.profilesOfProject(activeProjectId.value).map((p) => ({ label: p.name, value: p.id })),
+);
+const currentProfile = computed(() => agentsStore.activeAgent?.activeProfileId ?? null);
+
+watch(activeProjectId, (pid) => {
+  if (pid) void profilesStore.loadProjectProfiles(pid);
+});
+
 async function boot(): Promise<void> {
   await configStore.load();
   try {
@@ -108,6 +120,7 @@ async function boot(): Promise<void> {
   } catch (e) {
     bootError.value = e instanceof Error ? e.message : String(e);
   }
+  await profilesStore.load();
   if (agentsStore.activeAgent === null) {
     await agentsStore.createAgent(undefined, projectsStore.activeProjectId ?? undefined);
   }
@@ -158,6 +171,7 @@ function cmdContext(): CommandContext {
         await api.putSystemPrompt(path);
         await patchActive({ system_prompt_path: path });
       },
+      setProfile: async (profileId) => { await patchActive({ active_profile_id: profileId }); },
       clearHistory: async () => {
         const id = agentsStore.activeAgentId;
         if (id !== null) await agentsStore.clearHistory(id);
@@ -175,6 +189,8 @@ function cmdContext(): CommandContext {
     },
     modelIds: () => configStore.allModelIds(),
     currentModel: () => agentsStore.activeAgent?.model ?? null,
+    profileOptions: () =>
+      profilesStore.profilesOfProject(activeProjectId.value).map((p) => ({ id: p.id, name: p.name })),
   };
 }
 
@@ -248,6 +264,10 @@ const modelIds = () => configStore.allModelIds();
 
 function onModelChange(model: string): void {
   void patchActive({ model });
+}
+
+function onProfileChange(profileId: string): void {
+  void patchActive({ active_profile_id: profileId });
 }
 
 function onPaletteSelect(value: string | null): void {
@@ -359,9 +379,12 @@ function onProjectMemory(projectId: string): void {
                   :commands="registry"
                   :model-ids="modelIds"
                   :current-model="agentsStore.activeAgent?.model ?? null"
+                  :profile-options="profileOptions"
+                  :current-profile="currentProfile"
                   :on-send="onSend"
                   :on-stop="onStop"
                   :on-model-change="onModelChange"
+                  :on-profile-change="onProfileChange"
                 />
               </template>
             </main>

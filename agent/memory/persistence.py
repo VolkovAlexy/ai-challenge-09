@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS longterm_entries (
     text TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_profiles (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    PRIMARY KEY (project_id, profile_id)
+);
 CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions (updated_at);
 CREATE INDEX IF NOT EXISTS idx_longterm_project ON longterm_entries (project_id);
 """
@@ -67,6 +79,7 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN scratchpad TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN active_profile_id TEXT NOT NULL DEFAULT ''",
     # создаётся ПОСЛЕ добавления column project_id — на старой БД индекс
     # не может существовать до наращивания схемы
     "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id)",
@@ -92,6 +105,17 @@ class ProjectInfo:
     id: str
     name: str
     session_count: int = 0
+    updated_at: str = ""
+
+
+@dataclass
+class ProfileInfo:
+    """Глобальный профиль роли: системный промпт чата (обогащает/переопределяет базовый)."""
+
+    id: str
+    name: str
+    content: str
+    created_at: str = ""
     updated_at: str = ""
 
 
@@ -142,6 +166,7 @@ class SessionStore:
         active_branch: str = DEFAULT_BRANCH,
         branches: dict[str, BranchState] | None = None,
         project_id: str = "",
+        active_profile_id: str = "",
     ) -> None:
         """Атомарный upsert-снапшот: метаданные + полная замена истории.
 
@@ -168,8 +193,8 @@ class SessionStore:
                     INSERT INTO sessions
                         (id, name, title, system_prompt, settings_json, summary, compacted_upto,
                          facts, scratchpad, active_branch, branches_json, created_at, updated_at,
-                         project_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         project_id, active_profile_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET
                         name = excluded.name,
                         system_prompt = excluded.system_prompt,
@@ -181,7 +206,8 @@ class SessionStore:
                         active_branch = excluded.active_branch,
                         branches_json = excluded.branches_json,
                         updated_at = excluded.updated_at,
-                        project_id = excluded.project_id
+                        project_id = excluded.project_id,
+                        active_profile_id = excluded.active_profile_id
                     """,
                 (
                     session_id,
@@ -198,6 +224,7 @@ class SessionStore:
                     now,
                     now,
                     project_id,
+                    active_profile_id,
                 ),
             )
             self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -271,7 +298,7 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT name, system_prompt, settings_json, summary, compacted_upto,
-                       facts, active_branch, branches_json, scratchpad
+                       facts, active_branch, branches_json, scratchpad, active_profile_id
                 FROM sessions WHERE id = ?
                 """,
                 (session_id,),
@@ -307,6 +334,7 @@ class SessionStore:
             active_branch=active,
             branches=branches,
             history=history,
+            active_profile_id=row[9] or "",
         )
 
     def delete(self, session_id: str) -> bool:
@@ -486,7 +514,102 @@ class SessionStore:
             scratchpad=data.scratchpad,
             active_branch=data.active_branch,
             branches=data.branches,
+            active_profile_id=data.active_profile_id,
         )
+
+    # --- профили (глобальный пул, привязка к проекту) ---
+
+    def create_profile(self, name: str, content: str) -> ProfileInfo:
+        """Создаёт глобальный профиль. Имя пустое — ValueError."""
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            raise ValueError("имя профиля не может быть пустым")
+        profile_id = self.new_id()
+        now = _now()
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO profiles (id, name, content, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (profile_id, cleaned, content, now, now),
+            )
+        return ProfileInfo(id=profile_id, name=cleaned, content=content, updated_at=now)
+
+    def list_profiles(self) -> builtins.list[ProfileInfo]:
+        """Все глобальные профили (новые раньше — по updated_at)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, name, content, created_at, updated_at"
+                " FROM profiles ORDER BY updated_at DESC, name"
+            ).fetchall()
+        return [
+            ProfileInfo(id=r[0], name=r[1], content=r[2], created_at=r[3], updated_at=r[4])
+            for r in rows
+        ]
+
+    def get_profile(self, profile_id: str) -> ProfileInfo | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, name, content, created_at, updated_at"
+                " FROM profiles WHERE id = ?",
+                (profile_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProfileInfo(
+            id=row[0], name=row[1], content=row[2], created_at=row[3], updated_at=row[4]
+        )
+
+    def update_profile(self, profile_id: str, name: str, content: str) -> ProfileInfo | None:
+        """Переименовывает/меняет текст профиля; None — профиля нет."""
+        existing = self.get_profile(profile_id)
+        if existing is None:
+            return None
+        cleaned = " ".join(name.split())
+        if not cleaned:
+            raise ValueError("имя профиля не может быть пустым")
+        with self._lock:
+            self._conn.execute(
+                "UPDATE profiles SET name = ?, content = ?, updated_at = ? WHERE id = ?",
+                (cleaned, content, _now(), profile_id),
+            )
+            self._conn.commit()
+        return self.get_profile(profile_id)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        """Удаляет профиль: снимает привязки к проектам и у сессий. True, если он был."""
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM project_profiles WHERE profile_id = ?", (profile_id,))
+            self._conn.execute(
+                "UPDATE sessions SET active_profile_id = '' WHERE active_profile_id = ?",
+                (profile_id,),
+            )
+            cur = self._conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
+        return cur.rowcount > 0
+
+    def set_project_profiles(
+        self, project_id: str, profile_ids: builtins.list[str]
+    ) -> None:
+        """Заменяет набор профилей проекта (полная замена связей)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "DELETE FROM project_profiles WHERE project_id = ?", (project_id,)
+            )
+            for profile_id in profile_ids:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO project_profiles (project_id, profile_id)"
+                    " VALUES (?, ?)",
+                    (project_id, profile_id),
+                )
+
+    def list_project_profiles(self, project_id: str) -> builtins.list[str]:
+        """Профили, привязанные к проекту (в порядке добавления)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT profile_id FROM project_profiles"
+                " WHERE project_id = ? ORDER BY rowid",
+                (project_id,),
+            ).fetchall()
+        return [r[0] for r in rows]
 
     def count(self) -> int:
         with self._lock:

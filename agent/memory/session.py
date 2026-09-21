@@ -42,6 +42,7 @@ class SessionData:
     active_branch: str = DEFAULT_BRANCH
     branches: dict[str, BranchState] = field(default_factory=dict)
     history: list[Message] = field(default_factory=list)
+    active_profile_id: str = ""  # активный профиль роли чата
 
 
 class InMemorySession:
@@ -195,6 +196,7 @@ def save_session(
     scratchpad: str = "",
     active_branch: str = DEFAULT_BRANCH,
     branches: dict[str, BranchState] | None = None,
+    active_profile_id: str = "",
 ) -> Path:
     """Пишет сессию в jsonl; возвращает путь.
 
@@ -228,6 +230,7 @@ def save_session(
         "scratchpad": scratchpad,
         "active_branch": active_branch,
         "branches": branch_meta,
+        "active_profile_id": active_profile_id,
         "agent": settings.model_dump(),
     }
     lines = [json.dumps(meta, ensure_ascii=False)]
@@ -294,6 +297,7 @@ def load_session(path: Path | str) -> SessionData:
             active_branch=active,
             branches=branches,
             history=active_history,
+            active_profile_id=str(meta.get("active_profile_id", "")),
         )
     except (json.JSONDecodeError, KeyError, IndexError, ValueError, OSError, TypeError) as exc:
         raise SessionError(f"не удалось прочитать сессию {path}: {exc}") from exc
