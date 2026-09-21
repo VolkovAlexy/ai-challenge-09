@@ -50,6 +50,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+.playwright-mcp
 
 # Translations
 *.mo
@@ -218,3 +219,14 @@ __marimo__/
 .streamlit/secrets.toml
 
 .DS_Store
+
+# --- my_agent project ---
+
+# секретные/локальные настройки
+config.json
+sessions/
+
+# node (web)
+node_modules/
+coverage/
+*.tsbuildinfo

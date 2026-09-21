@@ -1,0 +1,371 @@
+"""Фабрика FastAPI-приложения web-бэкенда и точка входа my-agent-web.
+
+Эндпоинты в 1:1 соответствие маршрутам web/src/api/client.ts. Ключи API
+остаются в backend — ни один ответ их не содержит. Ошибки — {"detail": str}
+с 400/404/409 (409 = «агент уже отвечает»).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import os
+from collections.abc import AsyncIterator
+from datetime import datetime
+from pathlib import Path
+
+import uvicorn
+from fastapi import FastAPI, HTTPException
+from sse_starlette.sse import EventSourceResponse
+
+from agent.commands.registry import default_registry
+from agent.config.store import DEFAULT_CONFIG_PATH, load_config
+from agent.core.agent import AgentBusyError
+from agent.llm.client import LLMClient
+from agent.memory.longterm import LongTermMemory
+from agent.memory.persistence import SessionStore
+from agent.tools.registry import ToolRegistry
+from agent.web_server import dto
+from agent.web_server.state import (
+    DEFAULT_LONGTERM_PATH,
+    DEFAULT_SYSTEM_PROMPT_PATH,
+    AgentRecord,
+    WebState,
+)
+from agent.web_server.stream import agent_stream
+
+AUTOSAVE_INTERVAL = 2.0
+SESSIONS_DIR = Path("sessions")
+
+
+def _sessions_db() -> Path:
+    return SESSIONS_DIR / "sessions.db"
+
+
+async def _autosave_loop(state: WebState, interval: float) -> None:
+    """Период-тик автосохранения: снапшот только «грязных» агентов."""
+    while True:
+        await asyncio.sleep(interval)
+        state.persist_if_dirty()
+
+
+def create_app(state: WebState) -> FastAPI:
+    """Собирает приложение поверх готового WebState (регия, ресурсы, store)."""
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        tick = asyncio.create_task(_autosave_loop(state, AUTOSAVE_INTERVAL))
+        try:
+            yield
+        finally:
+            tick.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await tick
+            await state.llm.close()
+            state.store.close()
+
+    app = FastAPI(title="my-agent web backend", lifespan=lifespan)
+
+    def _record_or_404(agent_id: str) -> AgentRecord:
+        record = state.get(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="агент не найден")
+        return record
+
+    def _active_or_404() -> AgentRecord:
+        record = state.active_agent()
+        if record is None:
+            raise HTTPException(status_code=404, detail="нет активного агента")
+        return record
+
+    # --- конфиг / команды ---
+
+    @app.get("/api/config")
+    def get_config() -> dto.ConfigDTO:
+        return state.config_dto()
+
+    @app.get("/api/commands")
+    def get_commands() -> list[dto.CommandDTO]:
+        return state.commands_dto(default_registry())
+
+    # --- системный промпт (активный агент) ---
+
+    @app.get("/api/system-prompt")
+    def get_system_prompt() -> dto.SystemPromptDTO:
+        record = _active_or_404()
+        return dto.SystemPromptDTO(
+            path=record.system_prompt_path,
+            content=record.agent.system_prompt,
+        )
+
+    @app.put("/api/system-prompt")
+    def put_system_prompt(body: dto.SystemPromptPutRequest) -> dto.SystemPromptDTO:
+        record = _active_or_404()
+        try:
+            record.agent.set_system_prompt_file(body.path)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        record.system_prompt_path = body.path
+        state.persist(record)
+        return dto.SystemPromptDTO(
+            path=record.system_prompt_path,
+            content=record.agent.system_prompt,
+        )
+
+    # --- агенты ---
+
+    @app.get("/api/agents")
+    def list_agents() -> list[dto.AgentDTO]:
+        return [state.agent_dto(record) for record in state.records.values()]
+
+    @app.post("/api/agents")
+    def create_agent(body: dto.CreateAgentRequest | None = None) -> dto.AgentDTO:
+        name = body.name if body is not None else None
+        record = state.create_agent(name)
+        state.active_agent_id = record.agent_id
+        return state.agent_dto(record)
+
+    @app.delete("/api/agents/{agent_id}")
+    def delete_agent(agent_id: str) -> dict[str, bool]:
+        record = state.get(agent_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="агент не найден")
+        if record.agent.is_streaming:
+            raise HTTPException(status_code=409, detail="агент уже отвечает")
+        state.delete_agent(agent_id)
+        return {"ok": True}
+
+    @app.patch("/api/agents/{agent_id}")
+    def patch_agent(agent_id: str, body: dto.PatchAgentRequest) -> dto.AgentDTO:
+        record = _record_or_404(agent_id)
+        agent = record.agent
+        if body.name is not None:
+            agent.rename(body.name)
+        if body.model is not None:
+            try:
+                agent.set_model(body.model)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if body.temperature is not None:
+            agent.settings.temperature = body.temperature
+        if body.top_p is not None:
+            agent.settings.top_p = body.top_p
+        if body.max_tokens is not None:
+            agent.settings.max_tokens = body.max_tokens
+        if body.stop is not None:
+            agent.settings.stop = list(body.stop)
+        if body.system_prompt_path is not None:
+            try:
+                agent.set_system_prompt_file(body.system_prompt_path)
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            record.system_prompt_path = body.system_prompt_path
+        state.set_active(agent_id)
+        state.persist(record)
+        return state.agent_dto(record)
+
+    # --- история ---
+
+    @app.get("/api/agents/{agent_id}/messages")
+    def get_messages(agent_id: str) -> list[dto.MessageDTO]:
+        record = _record_or_404(agent_id)
+        return state.history_dto(record)
+
+    @app.delete("/api/agents/{agent_id}/messages")
+    def clear_messages(agent_id: str) -> dict[str, bool]:
+        record = _record_or_404(agent_id)
+        agent = record.agent
+        agent.memory.clear()
+        agent.reset_totals()
+        agent.last_usage = None
+        agent.message_usage = {}
+        state.persist(record)
+        return {"ok": True}
+
+    # --- сессии ---
+
+    @app.get("/api/sessions")
+    def list_sessions(limit: int | None = None, offset: int = 0) -> list[dto.SessionInfoDTO]:
+        return state.sessions_dto(limit=limit, offset=offset)
+
+    @app.post("/api/agents/{agent_id}/load-session")
+    def load_session(agent_id: str, body: dto.LoadSessionRequest) -> dto.AgentDTO:
+        record = _record_or_404(agent_id)
+        data = state.store.get(body.session_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="сессия не найдена")
+        record.agent.apply_session(data)
+        record.session_id = body.session_id
+        state.set_active(agent_id)
+        state.persist(record)
+        return state.agent_dto(record)
+
+    @app.post("/api/agents/{agent_id}/export")
+    def export_session(agent_id: str, body: dto.ExportRequest | None = None) -> dict[str, str]:
+        record = _record_or_404(agent_id)
+        if body is not None and body.path:
+            target: str | Path = body.path
+        else:
+            timestamp = Path(_now_stamp())
+            target = SESSIONS_DIR / f"{timestamp}.jsonl"
+        saved = record.agent.export(target)
+        return {"path": str(saved)}
+
+    @app.delete("/api/sessions/{session_id}")
+    def delete_session(session_id: str) -> dict[str, bool]:
+        if not state.delete_session(session_id):
+            raise HTTPException(status_code=404, detail="сессия не найдена")
+        return {"ok": True}
+
+    @app.post("/api/sessions/{session_id}/branch")
+    def branch_session(session_id: str) -> dto.AgentDTO:
+        try:
+            record = state.branch_session(session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return state.agent_dto(record)
+
+    @app.patch("/api/sessions/{session_id}")
+    def patch_session(session_id: str, body: dto.SessionPatchRequest) -> dict[str, bool]:
+        if not state.store.set_title(session_id, body.title):
+            raise HTTPException(status_code=404, detail="сессия не найдена")
+        return {"ok": True}
+
+    # --- управление ходом ---
+
+    @app.post("/api/agents/{agent_id}/cancel")
+    def cancel_ask(agent_id: str) -> dict[str, bool]:
+        record = _record_or_404(agent_id)
+        cancelled = record.agent.cancel_ask()
+        return {"cancelled": cancelled}
+
+    @app.post("/api/agents/{agent_id}/messages")
+    def send_message(
+        agent_id: str, body: dto.SendMessageRequest
+    ) -> EventSourceResponse:
+        record = _record_or_404(agent_id)
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="content не может быть пустым")
+        if record.agent.is_streaming:
+            raise HTTPException(status_code=409, detail="агент уже отвечает")
+        state.set_active(agent_id)
+        return EventSourceResponse(agent_stream(state, record, body.content))
+
+    # --- рабочая память (scratchpad) ---
+
+    @app.put("/api/agents/{agent_id}/scratchpad")
+    def put_scratchpad(agent_id: str, body: dto.ScratchpadPutRequest) -> dict[str, str]:
+        record = _record_or_404(agent_id)
+        record.agent.memory.scratchpad = body.content
+        state.persist(record)
+        return {"content": record.agent.memory.scratchpad}
+
+    # --- ветвление от сообщения ---
+
+    @app.post("/api/agents/{agent_id}/fork")
+    def fork_at(agent_id: str, body: dto.ForkRequest) -> dict[str, object]:
+        try:
+            record = state.fork_at(agent_id, body.message_index)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except AgentBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        state.set_active(agent_id)
+        return {
+            "agent": state.agent_dto(record).model_dump(),
+            "messages": [message.model_dump() for message in state.history_dto(record)],
+        }
+
+    # --- долговременная память ---
+
+    @app.get("/api/longterm")
+    def get_longterm() -> dto.LongTermDTO:
+        return state.longterm_dto()
+
+    @app.post("/api/longterm")
+    def post_longterm(body: dto.RememberRequest) -> dto.LongTermDTO:
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="content не может быть пустым")
+        return state.remember(body.content)
+
+    @app.delete("/api/longterm/{index}")
+    def delete_longterm(index: int) -> dto.LongTermDTO:
+        try:
+            return state.forget(index)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.put("/api/longterm/{index}")
+    def put_longterm(index: int, body: dto.RememberRequest) -> dto.LongTermDTO:
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="content не может быть пустым")
+        try:
+            return state.update_longterm(index, body.content)
+        except IndexError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # --- предложение памяти (MEMORY_SUGGESTION) ---
+
+    @app.post("/api/agents/{agent_id}/memory-suggestion/accept")
+    def accept_memory_suggestion(agent_id: str) -> dto.LongTermDTO:
+        try:
+            return state.accept_suggestion(agent_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/agents/{agent_id}/memory-suggestion/dismiss")
+    def dismiss_memory_suggestion(agent_id: str) -> dict[str, bool]:
+        record = _record_or_404(agent_id)
+        record.agent.dismiss_suggestion()
+        return {"ok": True}
+
+    return app
+
+
+def _now_stamp() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def main() -> None:
+    """Точка входа `uv run my-agent-web`: поднимает uvicorn на 127.0.0.1:8321."""
+    parser = argparse.ArgumentParser(prog="agent-web", description="web-бэкенд agent")
+    parser.add_argument(
+        "--host", default="127.0.0.1", help="адрес для прослушивания"
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("MY_AGENT_PORT", "8321")),
+        help="порт (env MY_AGENT_PORT)",
+    )
+    parser.add_argument(
+        "--config",
+        default=os.environ.get("MY_AGENT_CONFIG", str(DEFAULT_CONFIG_PATH)),
+        help="путь к config.json",
+    )
+    parser.add_argument("--sessions", default=None, help="путь к sessions.db")
+    parser.add_argument(
+        "--reload", action="store_true",
+        help="горячая перезагрузка кода (dev-режим)",
+    )
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+    llm = LLMClient()
+    tools = ToolRegistry()
+    store = SessionStore(args.sessions or _sessions_db())
+    prompt_path = Path(DEFAULT_SYSTEM_PROMPT_PATH)
+    prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+    longterm = LongTermMemory(DEFAULT_LONGTERM_PATH)
+    state = WebState(
+        config=config,
+        llm=llm,
+        tools=tools,
+        store=store,
+        default_system_prompt=prompt,
+        default_prompt_path=DEFAULT_SYSTEM_PROMPT_PATH,
+        longterm=longterm,
+    )
+    app = create_app(state)
+    uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)
