@@ -122,16 +122,29 @@ async def agent_stream(
     reasoning_sent = ""
     compaction_active = False
     scratchpad_sent = agent.memory.scratchpad
+    task_sent = json.dumps(
+        agent.memory.task.state.to_dict(), sort_keys=True, ensure_ascii=False
+    )
 
     async def drain_tool_events() -> AsyncIterator[dict[str, str]]:
-        """Артефакты tool-раундов: сообщения + изменившийся scratchpad."""
-        nonlocal scratchpad_sent
+        """Артефакты tool-раундов: сообщения + изменившийся scratchpad/задача."""
+        nonlocal scratchpad_sent, task_sent
         while agent.turn_events:
             idx, msg = agent.turn_events.pop(0)
             yield _sse("tool_message", {"message": state.message_dto(msg, idx).model_dump()})
         if agent.memory.scratchpad != scratchpad_sent:
             scratchpad_sent = agent.memory.scratchpad
             yield _sse("scratchpad", {"content": agent.memory.scratchpad})
+        task_now = json.dumps(
+            agent.memory.task.state.to_dict(), sort_keys=True, ensure_ascii=False
+        )
+        if task_now != task_sent:
+            task_sent = task_now
+            payload = WebState.task_dto(agent.memory.task.state)
+            yield _sse(
+                "task",
+                {"task": payload.model_dump() if payload is not None else None},
+            )
 
     try:
         while not task.done():

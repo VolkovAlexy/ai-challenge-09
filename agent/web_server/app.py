@@ -22,13 +22,12 @@ from sse_starlette.sse import EventSourceResponse
 from agent.commands.registry import default_registry
 from agent.config.store import DEFAULT_CONFIG_PATH, load_config
 from agent.core.agent import AgentBusyError
+from agent.core.task import InvalidTaskTransition
 from agent.llm.client import LLMClient
-from agent.memory.longterm import LongTermMemory
 from agent.memory.persistence import SessionStore
 from agent.tools.registry import ToolRegistry
 from agent.web_server import dto
 from agent.web_server.state import (
-    DEFAULT_LONGTERM_PATH,
     DEFAULT_SYSTEM_PROMPT_PATH,
     AgentRecord,
     WebState,
@@ -267,6 +266,21 @@ def create_app(state: WebState) -> FastAPI:
         state.persist(record)
         return {"content": record.agent.memory.scratchpad}
 
+    # --- состояние задачи (конечный автомат) ---
+
+    @app.post("/api/agents/{agent_id}/task")
+    def post_task(agent_id: str, body: dto.TaskCommandRequest) -> dto.AgentDTO:
+        _record_or_404(agent_id)
+        try:
+            record = state.apply_task_command(agent_id, body)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except InvalidTaskTransition as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return state.agent_dto(record)
+
     # --- ветвление от сообщения ---
 
     @app.post("/api/agents/{agent_id}/fork")
@@ -455,7 +469,6 @@ def main() -> None:
     store = SessionStore(args.sessions or _sessions_db())
     prompt_path = Path(DEFAULT_SYSTEM_PROMPT_PATH)
     prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
-    longterm = LongTermMemory(DEFAULT_LONGTERM_PATH)
     state = WebState(
         config=config,
         llm=llm,
@@ -463,7 +476,6 @@ def main() -> None:
         store=store,
         default_system_prompt=prompt,
         default_prompt_path=DEFAULT_SYSTEM_PROMPT_PATH,
-        longterm=longterm,
     )
     app = create_app(state)
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)

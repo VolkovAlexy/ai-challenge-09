@@ -5,6 +5,7 @@ from pathlib import Path
 
 from agent.config.schema import AgentSettings, Config, validate_config
 from agent.core.message import Message, Role
+from agent.core.task import TaskPhase, TaskStateMachine
 from agent.memory.persistence import SessionStore
 from agent.memory.session import load_session
 
@@ -159,3 +160,26 @@ def test_persist_across_reopen(tmp_path: Path) -> None:
     assert [m.content for m in data.history] == ["x"]
     assert store2.list()[0].title == "x"
     store2.close()
+
+
+def test_snapshot_persists_task_state(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "s.db")
+    sid = store.new_id()
+    machine = TaskStateMachine()
+    machine.start("написать модуль", ["подготовить", "реализовать"])
+    store.snapshot(
+        sid,
+        "chat",
+        make_settings(),
+        "SP",
+        [Message(role=Role.USER, content="привет")],
+        task=machine.state,
+    )
+
+    data = store.get(sid)
+    assert data is not None
+    assert data.task is not None
+    assert data.task.phase is TaskPhase.PLANNING
+    assert data.task.description == "написать модуль"
+    assert data.task.steps == ["подготовить", "реализовать"]
+    store.close()

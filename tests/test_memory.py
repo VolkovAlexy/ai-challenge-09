@@ -1,6 +1,6 @@
-"""Трёхуровневая память: долгосрочная (файл), рабочая (scratchpad+tools), предложения.
+"""Трёхуровневая память: долгосрочная (проект в БД), рабочая (scratchpad+tools), предложения.
 
-Покрывает: LongTermMemory (append/remove/entries), инжект в проекцию,
+Покрывает: инжект долгосрочной памяти в проекцию,
 исполнение tool_calls (scratchpad-инструменты), вырезание
 [MEMORY_SUGGESTION], fork_at, REST-эндпоинты /longterm, /fork,
 /scratchpad, memory-suggestion.
@@ -17,7 +17,7 @@ import httpx
 from agent.config.schema import AgentSettings, validate_config
 from agent.core.agent import Agent
 from agent.core.message import ChatChunk, Message, Role
-from agent.memory.longterm import LongTermMemory
+from agent.memory.longterm import LongTermSource, ProjectLongTermMemory
 from agent.memory.persistence import SessionStore
 from agent.tools.registry import ToolRegistry
 from agent.web_server.app import create_app
@@ -56,7 +56,7 @@ def make_config() -> object:
 
 def make_agent(
     chunks: list[ChatChunk],
-    longterm: LongTermMemory | None = None,
+    longterm: LongTermSource | None = None,
 ) -> tuple[Agent, MockLLM]:
     llm = MockLLM(chunks)
     agent = Agent(
@@ -70,76 +70,13 @@ def make_agent(
     return agent, llm
 
 
-# --- долговременная память ---
+# --- долговременная память (проект в БД) ---
 
 
-def test_longterm_append_entries_remove(tmp_path) -> None:
-    memory = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
-    assert memory.load() == ""  # файла нет — пусто, без исключений
-    memory.append("пользователь любит краткие ответы")
-    memory.append("проект на Python")
-    assert memory.entries() == ["пользователь любит краткие ответы", "проект на Python"]
-    removed = memory.remove(0)
-    assert removed == "пользователь любит краткие ответы"
-    assert memory.entries() == ["проект на Python"]
-
-
-def test_longterm_append_normalizes_whitespace(tmp_path) -> None:
-    memory = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
-    entry = memory.append("строка\nс   переносами")
-    assert entry == "строка с переносами"
-    assert memory.entries() == ["строка с переносами"]
-
-
-def test_longterm_append_does_not_duplicate_header(tmp_path) -> None:
-    """Каждая запись не должна добавлять копию заголовка-шаблона в файл."""
-    from agent.memory.longterm import FILE_HEADER
-
-    memory = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
-    memory.append("первая")
-    memory.append("вторая")
-    memory.remove(0)
-    memory.update(0, "обновлено")
-    content = memory.load()
-    assert content.count("# Долговременная память") == 1
-    assert content.strip().startswith(FILE_HEADER.strip().splitlines()[0])
-    assert not content[len(FILE_HEADER) :].strip().startswith("# Долговременная память")
-    assert memory.entries() == ["обновлено"]
-
-
-def test_longterm_rejects_empty(tmp_path) -> None:
-    memory = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
-    try:
-        memory.append("   ")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("ожидали ValueError на пустую запись")
-
-
-def test_longterm_update(tmp_path) -> None:
-    memory = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
-    memory.append("зовут Демерзель")
-    memory.append("проект на Python")
-    entry = memory.update(0, "обращаться  к пользователю\nБосс")
-    assert entry == "обращаться к пользователю Босс"
-    assert memory.entries() == ["обращаться к пользователю Босс", "проект на Python"]
-    try:
-        memory.update(5, "любое")
-    except IndexError:
-        pass
-    else:
-        raise AssertionError("ожидали IndexError на неверный индекс")
-    try:
-        memory.update(0, "   ")
-    except ValueError:
-        pass
-    else:
-        raise AssertionError("ожидали ValueError на пустую запись")
-
-
-def test_projection_contains_longterm_and_scratchpad(tmp_path) -> None:
-    longterm = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
+def test_projection_contains_longterm_and_scratchpad() -> None:
+    store = SessionStore(":memory:")
+    store.ensure_project("default", "По умолчанию")
+    longterm = ProjectLongTermMemory(store, "default")
     longterm.append("пользователь предпочитает python")
     agent, _ = make_agent([ChatChunk(content="ok")], longterm=longterm)
     agent.memory.scratchpad = "задача: починить тесты"
@@ -255,9 +192,9 @@ def test_write_scratchpad_via_tool_loop() -> None:
     tool_msg = agent.memory.history[2]
     assert tool_msg.role is Role.TOOL
     assert "Рабочая память обновлена" in (tool_msg.content or "")
-    # инструменты переданы в запрос к LLM
+    # инструменты переданы в запрос к LLM: 3 scratchpad + 8 task
     tools = getattr(llm.seen[0], "tools", None)
-    assert tools is not None and len(tools) == 3
+    assert tools is not None and len(tools) == 11
 
 
 def test_append_and_read_scratchpad_tools() -> None:
@@ -397,14 +334,12 @@ def build_state(tmp_path, chunks: list[ChatChunk] | None = None, llm: object | N
 
     llm = llm or MockLLM(chunks or [ChatChunk(content="ok")])
     store = SessionStore(":memory:")
-    longterm = LongTermMemory(tmp_path / "LONGTERM_MEMORY.md")
     state = WebState(
         config=make_config(),  # type: ignore[arg-type]
         llm=llm,  # type: ignore[arg-type]
         tools=ToolRegistry(),
         store=store,
         default_system_prompt="SP",
-        longterm=longterm,
     )
     return state, create_app(state)
 

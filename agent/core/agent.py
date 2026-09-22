@@ -31,12 +31,14 @@ from agent.core.message import (
     ToolCall,
     Usage,
 )
+from agent.core.task import TaskState
 from agent.llm.client import LLMClient, LLMError
 from agent.memory.facts import FactsExtractor
 from agent.memory.longterm import LongTermSource
 from agent.memory.session import InMemorySession, SessionData, save_session
 from agent.tools.registry import ToolRegistry
 from agent.tools.scratchpad import parse_tool_arguments, scratchpad_tools
+from agent.tools.task import task_tools
 
 CANCELLED_MARK = "… (запрос отменён)"
 
@@ -128,6 +130,8 @@ class Agent:
         for tool in (tools or ToolRegistry()).all():
             self._tools.register(tool)
         for tool in scratchpad_tools(self.memory):
+            self._tools.register(tool)
+        for tool in task_tools(self.memory):
             self._tools.register(tool)
         # долговременная память: уровень проекта (своя у каждого проекта)
         self._longterm = longterm
@@ -266,6 +270,7 @@ class Agent:
         longterm_raw = self._longterm.load() if self._longterm is not None else ""
         longterm = longterm_raw.strip() or None
         scratchpad = self.memory.scratchpad.strip() or None
+        task = self.memory.task.state
         strategy = self.settings.context_strategy
         if strategy == "none":
             return self.context_builder.build_messages(
@@ -273,6 +278,7 @@ class Agent:
                 self.memory.history,
                 longterm=longterm,
                 scratchpad=scratchpad,
+                task=task,
             )
         if strategy == "summary":
             return self.context_builder.build_messages(
@@ -281,6 +287,7 @@ class Agent:
                 summary=self.memory.summary,
                 longterm=longterm,
                 scratchpad=scratchpad,
+                task=task,
             )
         # sliding / facts: скользящее окно по полной истории
         return self.context_builder.build_messages(
@@ -289,6 +296,7 @@ class Agent:
             facts=self.memory.facts or None if strategy == "facts" else None,
             longterm=longterm,
             scratchpad=scratchpad,
+            task=task,
         )
 
     def _projected_tokens(self) -> int:
@@ -676,6 +684,7 @@ class Agent:
             compacted_upto=self.memory.compacted_upto,
             history=self.memory.history,
             facts=self.memory.facts,
+            task=self.memory.task.state,
             active_branch=self.memory.active_branch,
             branches=self.memory.branches,
             active_profile_id=self.active_profile_id,
@@ -691,6 +700,7 @@ class Agent:
             self.memory.add(message)
         self.memory.facts = dict(data.facts)
         self.memory.scratchpad = data.scratchpad
+        self.memory.task.state = data.task if data.task is not None else TaskState()
         self.memory.restore_branches(data.branches, active=data.active_branch)
         self.active_profile_id = data.active_profile_id
         self.profile_content = ""  # текст подтягивается веб-слоем из store

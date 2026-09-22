@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from pydantic import BaseModel
 
 
@@ -50,6 +52,17 @@ class SystemPromptDTO(BaseModel):
     content: str
 
 
+class TaskStateDTO(BaseModel):
+    """Состояние задачи как конечный автомат (этап, шаг, ожидаемое действие)."""
+
+    phase: str  # idle | planning | execution | validation | done
+    step: int = 0  # номер текущего шага (1-based; 0 — шага нет)
+    steps: list[str] = []  # план задачи (шаги)
+    expected_action: str = ""  # что сделать дальше
+    description: str = ""  # описание задачи
+    paused: bool = False  # пауза на любом этапе
+
+
 class AgentDTO(BaseModel):
     """Полное состояние агента для /api/agents."""
 
@@ -66,6 +79,7 @@ class AgentDTO(BaseModel):
     scratchpad: str = ""  # рабочая память текущей задачи
     memory_suggestion: str | None = None  # предложение сохранить знание (ждёт решения UI)
     active_profile_id: str = ""  # активный профиль роли чата ("" — без него)
+    task: TaskStateDTO | None = None  # состояние задачи (автомат); None — задачи нет
 
 
 class ProfileDTO(BaseModel):
@@ -206,6 +220,32 @@ class RememberRequest(BaseModel):
 
 class ScratchpadPutRequest(BaseModel):
     content: str
+
+
+class TaskCommandOperation(StrEnum):
+    """Операции над автоматом задачи (управляются из UI; без слэш-команд)."""
+
+    START = "start"
+    SET_PHASE = "set_phase"
+    ADVANCE = "advance"
+    PAUSE = "pause"
+    RESUME = "resume"
+    RESET = "reset"
+    SET_EXPECTED_ACTION = "set_expected_action"
+
+
+class TaskCommandRequest(BaseModel):
+    """Команда управления автоматом задачи (POST /api/agents/{id}/task)."""
+
+    operation: TaskCommandOperation
+    # только для start
+    description: str = ""
+    # план задачи: список шагов
+    steps: list[str] | None = None
+    # для set_phase / start — целевой этап
+    phase: str = ""
+    # ожидаемое действие при переходе
+    expected_action: str = ""
 
 
 class ForkRequest(BaseModel):

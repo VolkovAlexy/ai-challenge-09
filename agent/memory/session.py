@@ -16,6 +16,7 @@ from typing import Any
 
 from agent.config.schema import AgentSettings
 from agent.core.message import Message
+from agent.core.task import TaskState, TaskStateMachine
 from agent.memory.branching import DEFAULT_BRANCH, BranchState
 
 
@@ -30,6 +31,7 @@ class SessionData:
     Поля history/summary/compacted_upto/facts описывают активную ветку;
     `branches` — только неактивные ветки (активная — в самих полях).
     `scratchpad` — рабочая память задачи (уровень сессии, не ветки).
+    `task` — состояние задачи как конечный автомат (уровень сессии).
     """
 
     settings: AgentSettings
@@ -39,6 +41,7 @@ class SessionData:
     compacted_upto: int = 0
     facts: dict[str, str] = field(default_factory=dict)
     scratchpad: str = ""
+    task: TaskState | None = None
     active_branch: str = DEFAULT_BRANCH
     branches: dict[str, BranchState] = field(default_factory=dict)
     history: list[Message] = field(default_factory=list)
@@ -64,6 +67,7 @@ class InMemorySession:
         self.compacted_upto: int = 0
         self.facts: dict[str, str] = {}
         self.scratchpad: str = ""  # рабочая память задачи (уровень сессии)
+        self.task: TaskStateMachine = TaskStateMachine()  # автомат состояния задачи
         self._branches: dict[str, BranchState] = {}
         self._active: str = DEFAULT_BRANCH
 
@@ -106,6 +110,7 @@ class InMemorySession:
         self.compacted_upto = compacted_upto
         self.facts = {}
         self.scratchpad = ""
+        self.task = TaskStateMachine()
 
     def __len__(self) -> int:
         return len(self._history)
@@ -194,6 +199,7 @@ def save_session(
     history: list[Message],
     facts: dict[str, str] | None = None,
     scratchpad: str = "",
+    task: TaskState | None = None,
     active_branch: str = DEFAULT_BRANCH,
     branches: dict[str, BranchState] | None = None,
     active_profile_id: str = "",
@@ -228,6 +234,7 @@ def save_session(
         "compacted_upto": compacted_upto,
         "facts": facts or {},
         "scratchpad": scratchpad,
+        "task": task.to_dict() if task is not None and task.is_active else None,
         "active_branch": active_branch,
         "branches": branch_meta,
         "active_profile_id": active_profile_id,
@@ -294,6 +301,7 @@ def load_session(path: Path | str) -> SessionData:
             compacted_upto=meta.get("compacted_upto", 0),
             facts={str(k): str(v) for k, v in meta.get("facts", {}).items()},
             scratchpad=str(meta.get("scratchpad", "")),
+            task=TaskState.from_dict(meta.get("task", {})),
             active_branch=active,
             branches=branches,
             history=active_history,

@@ -12,6 +12,7 @@ function seedStore(): void {
     systemPromptPath: "p", systemPromptContent: "s",
     history: [], streaming: true, compacting: false, cancelled: false, compactionNote: null,
     scratchpad: "", memorySuggestion: null, activeProfileId: "",
+    task: null,
     streamingReasoning: "",
     sessionId: null, tokensIn: 0, tokensOut: 0, contextUsed: 0, contextWindow: 0,
   };
@@ -21,6 +22,7 @@ function seedStore(): void {
     systemPromptPath: "p", systemPromptContent: "s",
     history: [], streaming: false, compacting: false, cancelled: false, compactionNote: null,
     scratchpad: "", memorySuggestion: null, activeProfileId: "",
+    task: null,
     streamingReasoning: "",
     sessionId: null,
     tokensIn: 0, tokensOut: 0, contextUsed: 0, contextWindow: 0,

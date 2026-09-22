@@ -7,6 +7,7 @@ import pytest
 from agent.config.schema import AgentSettings, validate_config
 from agent.core.agent import CANCELLED_MARK, Agent, AgentBusyError
 from agent.core.message import ChatChunk, Role, ToolCallDelta
+from agent.core.task import TaskPhase
 from agent.llm.client import LLMError
 
 
@@ -214,3 +215,38 @@ def test_ask_empty_answer_without_length_raises() -> None:
     with pytest.raises(LLMError, match="пустой ответ"):
         asyncio.run(agent.ask("hi"))
     assert [m.role for m in agent.memory.history] == [Role.USER]
+
+
+def test_ask_runs_task_start_tool_and_updates_state() -> None:
+    """Инструмент task_start запускает задачу и переводит автомат в планирование."""
+    chunks = [
+        ChatChunk(
+            tool_call_deltas=[
+                ToolCallDelta(
+                    index=0,
+                    id="c1",
+                    function_name="task_start",
+                    function_arguments='{"description": "написать модуль", "steps": ["a", "b"]}',
+                )
+            ]
+        ),
+        ChatChunk(finish_reason="tool_calls"),
+    ]
+    agent, _ = make_agent(chunks)
+    asyncio.run(agent.ask("начни задачу"))
+    state = agent.memory.task.state
+    assert state.phase is TaskPhase.PLANNING
+    assert state.description == "написать модуль"
+    assert state.steps == ["a", "b"]
+
+
+def test_ask_projects_task_state_into_context() -> None:
+    """Активная задача попадает в контекст LLM на каждом ходу."""
+    agent, llm = make_agent([ChatChunk(content="ok")])
+    agent.memory.task.start("написать модуль", ["подготовить", "реализовать"])
+    asyncio.run(agent.ask("hi"))
+    request = llm.calls[0][0]
+    contents = [m.content or "" for m in request.messages]
+    assert any("Активная задача" in c for c in contents)
+    assert any("Этап: планирование" in c for c in contents)
+    assert any("Шаг: 1 из 2" in c for c in contents)

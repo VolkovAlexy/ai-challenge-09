@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Баннер предложения памяти: агент нашёл знание, достойное долговременной памяти.
-// Принять — текст уходит в LONGTERM_MEMORY.md; Отклонить — предложение снимается.
+// Принять — текст уходит в долговременную память; Отклонить — предложение снимается.
 import { computed, ref } from "vue";
 import { NButton, useMessage } from "naive-ui";
 import { useAgentsStore } from "@/stores/agents";

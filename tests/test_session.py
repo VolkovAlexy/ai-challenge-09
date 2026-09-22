@@ -7,6 +7,7 @@ import pytest
 from agent.config.schema import AgentSettings, Config, validate_config
 from agent.core.agent import Agent
 from agent.core.message import Message, Role
+from agent.core.task import TaskPhase, TaskStateMachine
 from agent.memory.session import (
     InMemorySession,
     SessionError,
@@ -75,6 +76,24 @@ def test_save_session_direct(tmp_path: Path) -> None:
     )
     assert path.exists()
     assert load_session(path).name == "n"
+
+
+def test_save_load_task_roundtrip(tmp_path: Path) -> None:
+    machine = TaskStateMachine()
+    machine.start("написать модуль", ["подготовить", "реализовать"])
+    path = save_session(
+        tmp_path / "task.jsonl",
+        settings=AgentSettings.from_config(make_config()),
+        system_prompt="SP",
+        name="n",
+        history=[Message(role=Role.USER, content="x")],
+        task=machine.state,
+    )
+    data = load_session(path)
+    assert data.task is not None
+    assert data.task.phase is TaskPhase.PLANNING
+    assert data.task.description == "написать модуль"
+    assert data.task.steps == ["подготовить", "реализовать"]
 
 
 def test_load_missing_file(tmp_path: Path) -> None:

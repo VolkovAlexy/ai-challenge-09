@@ -3,7 +3,7 @@
 // неактивная вкладка не рендерится, но стор обновляется.
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import type { AgentDTO, LongTermDTO, MessageDTO, PatchAgentDTO, StreamEvent } from "@/api/types";
+import type { AgentDTO, LongTermDTO, MessageDTO, PatchAgentDTO, StreamEvent, TaskCommandRequest, TaskPhase, TaskStateDTO } from "@/api/types";
 import { api } from "@/api/client";
 
 export type AgentId = string;
@@ -37,6 +37,8 @@ export interface AgentState {
   memorySuggestion: string | null;
   /** активный профиль роли чата ("" — без него) */
   activeProfileId: string;
+  /** состояние задачи (конечный автомат); null — задача не задана */
+  task: TaskStateDTO | null;
   /** живой стрим размышлений thinking-модели (копится до done/tool_message) */
   streamingReasoning: string;
   /** ID загруженной сессии (если агент восстановлен из сессии) */
@@ -67,6 +69,7 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     scratchpad: dto.scratchpad ?? "",
     memorySuggestion: dto.memory_suggestion ?? null,
     activeProfileId: dto.active_profile_id ?? "",
+    task: dto.task ?? null,
     streamingReasoning: "",
     sessionId: null,
     tokensIn: 0,
@@ -129,6 +132,7 @@ export const useAgentsStore = defineStore("agents", () => {
     state.scratchpad = dto.scratchpad ?? state.scratchpad;
     if (dto.memory_suggestion !== undefined) state.memorySuggestion = dto.memory_suggestion;
     if (dto.active_profile_id !== undefined) state.activeProfileId = dto.active_profile_id;
+    if (dto.task !== undefined) state.task = dto.task;
     if (existing === undefined) {
       agents.value[dto.id] = state;
       order.value.push(dto.id);
@@ -331,7 +335,7 @@ export const useAgentsStore = defineStore("agents", () => {
     }
   }
 
-  /** Запомнить сообщение: текст — в долговременную память (LONGTERM_MEMORY.md). */
+  /** Запомнить сообщение: текст — в долговременную память. */
   async function rememberMessage(content: string): Promise<void> {
     await addLongterm(content);
   }
@@ -354,6 +358,37 @@ export const useAgentsStore = defineStore("agents", () => {
     } catch {
       /* локальное состояние уже обновлено; автосохранение подхватит */
     }
+  }
+
+  // --- состояние задачи (конечный автомат) ---
+
+  /** Отправить команду автомату задачи и переписать состояние агента из ответа. */
+  async function runTaskCommand(id: AgentId, body: TaskCommandRequest): Promise<void> {
+    upsert(await api.taskCommand(id, body));
+  }
+
+  async function startTask(id: AgentId, description: string, steps: string[], expectedAction?: string): Promise<void> {
+    await runTaskCommand(id, { operation: "start", description, steps, expected_action: expectedAction });
+  }
+
+  async function setTaskPhase(id: AgentId, phase: TaskPhase, expectedAction?: string): Promise<void> {
+    await runTaskCommand(id, { operation: "set_phase", phase, expected_action: expectedAction });
+  }
+
+  async function advanceTaskStep(id: AgentId, expectedAction?: string): Promise<void> {
+    await runTaskCommand(id, { operation: "advance", expected_action: expectedAction });
+  }
+
+  async function pauseTask(id: AgentId): Promise<void> {
+    await runTaskCommand(id, { operation: "pause" });
+  }
+
+  async function resumeTask(id: AgentId): Promise<void> {
+    await runTaskCommand(id, { operation: "resume" });
+  }
+
+  async function resetTask(id: AgentId): Promise<void> {
+    await runTaskCommand(id, { operation: "reset" });
   }
 
   return {
@@ -381,6 +416,12 @@ export const useAgentsStore = defineStore("agents", () => {
     rememberMessage,
     forkAt,
     setScratchpad,
+    startTask,
+    setTaskPhase,
+    advanceTaskStep,
+    pauseTask,
+    resumeTask,
+    resetTask,
     setActive,
   };
 });
@@ -420,6 +461,9 @@ export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
       break;
     case "scratchpad":
       state.scratchpad = ev.content;
+      break;
+    case "task":
+      state.task = ev.task;
       break;
     case "done":
       upsertDone(state, ev.message);

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { useAgentsStore } from "./agents";
-import type { AgentDTO, MessageDTO, StreamEvent } from "@/api/types";
+import { applyStreamEvent, useAgentsStore } from "./agents";
+import type { AgentDTO, MessageDTO, StreamEvent, TaskStateDTO } from "@/api/types";
 
 let nextId = 0;
 
@@ -267,5 +267,64 @@ describe("agents store", () => {
     expect(store.activeAgent?.id).toBe(d1.id);
     store.setActive(d2.id);
     expect(store.activeAgent?.history).toEqual(store.agents[d2.id]?.history);
+  });
+
+  const TASK: TaskStateDTO = {
+    phase: "execution",
+    step: 2,
+    steps: ["подготовить", "реализовать", "проверить"],
+    expected_action: "протестировать модуль",
+    description: "написать модуль",
+    paused: false,
+  };
+
+  it("stateFromDTO мапит состояние задачи при создании агента", async () => {
+    const dto = agentDTO({ task: TASK });
+    mockFetch(new Map([["POST /agents", () => new Response(JSON.stringify(dto), { status: 200 })]]));
+    const store = useAgentsStore();
+    await store.createAgent();
+    expect(store.agents[dto.id]?.task).toEqual(TASK);
+  });
+
+  it("applyStreamEvent: событие task обновляет состояние задачи", async () => {
+    const dto = agentDTO();
+    mockFetch(new Map([["POST /agents", () => new Response(JSON.stringify(dto), { status: 200 })]]));
+    const store = useAgentsStore();
+    const state = await store.createAgent();
+    applyStreamEvent(state, { event: "task", task: TASK });
+    expect(state.task).toEqual(TASK);
+    applyStreamEvent(state, { event: "task", task: null });
+    expect(state.task).toBeNull();
+  });
+
+  it("pauseTask шлёт POST /agents/{id}/task и обновляет состояние", async () => {
+    const dto = agentDTO();
+    const paused: AgentDTO = { ...dto, task: { ...TASK, paused: true } };
+    mockFetch(
+      new Map([
+        ["POST /agents", () => new Response(JSON.stringify(dto), { status: 200 })],
+        [`POST /agents/${dto.id}/task`, () => new Response(JSON.stringify(paused), { status: 200 })],
+      ]),
+    );
+    const store = useAgentsStore();
+    await store.createAgent();
+    await store.pauseTask(dto.id);
+    expect(store.agents[dto.id]?.task?.paused).toBe(true);
+  });
+
+  it("startTask передаёт описание и шаги, сбрасывает неактивную задачу", async () => {
+    const dto = agentDTO();
+    const started: AgentDTO = { ...dto, task: { ...TASK, phase: "planning", description: "x", steps: ["а", "б"] } };
+    mockFetch(
+      new Map([
+        ["POST /agents", () => new Response(JSON.stringify(dto), { status: 200 })],
+        [`POST /agents/${dto.id}/task`, () => new Response(JSON.stringify(started), { status: 200 })],
+      ]),
+    );
+    const store = useAgentsStore();
+    await store.createAgent();
+    await store.startTask(dto.id, "x", ["а", "б"]);
+    expect(store.agents[dto.id]?.task?.phase).toBe("planning");
+    expect(store.agents[dto.id]?.task?.steps).toEqual(["а", "б"]);
   });
 });

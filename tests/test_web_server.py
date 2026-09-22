@@ -386,3 +386,62 @@ async def test_history_messages_include_reasoning() -> None:
         assert msgs[1]["reasoning"] == "шаг 1"
 
 
+async def test_task_start_returns_planning_dto() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        resp = await client.post(
+            f"/api/agents/{aid}/task",
+            json={"operation": "start", "description": "написать модуль", "steps": ["a", "b"]},
+        )
+        assert resp.status_code == 200
+        dto = resp.json()
+        assert dto["task"] is not None
+        assert dto["task"]["phase"] == "planning"
+        assert dto["task"]["steps"] == ["a", "b"]
+
+
+async def test_task_set_phase_invalid_transition_409() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        resp = await client.post(
+            f"/api/agents/{aid}/task", json={"operation": "set_phase", "phase": "execution"}
+        )
+        assert resp.status_code == 409
+        assert "detail" in resp.json()
+
+
+async def test_task_unknown_agent_404() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        resp = await client.post("/api/agents/nope/task", json={"operation": "pause"})
+        assert resp.status_code == 404
+
+
+async def test_task_pause_and_resume() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        await client.post(
+            f"/api/agents/{aid}/task", json={"operation": "start", "description": "x"}
+        )
+        resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "pause"})
+        assert resp.status_code == 200
+        assert resp.json()["task"]["paused"] is True
+        resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "resume"})
+        assert resp.json()["task"]["paused"] is False
+
+
+async def test_task_reset_returns_no_task() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        await client.post(
+            f"/api/agents/{aid}/task", json={"operation": "start", "description": "x"}
+        )
+        resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "reset"})
+        assert resp.status_code == 200
+        assert resp.json()["task"] is None
+
+

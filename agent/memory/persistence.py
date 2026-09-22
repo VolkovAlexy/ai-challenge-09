@@ -21,6 +21,7 @@ from uuid import uuid4
 
 from agent.config.schema import AgentSettings
 from agent.core.message import Message
+from agent.core.task import TaskState
 from agent.memory.branching import DEFAULT_BRANCH, BranchState
 from agent.memory.session import SessionData, save_session
 
@@ -80,6 +81,7 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN active_profile_id TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE sessions ADD COLUMN task TEXT NOT NULL DEFAULT '{}'",
     # создаётся ПОСЛЕ добавления column project_id — на старой БД индекс
     # не может существовать до наращивания схемы
     "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id)",
@@ -167,6 +169,7 @@ class SessionStore:
         branches: dict[str, BranchState] | None = None,
         project_id: str = "",
         active_profile_id: str = "",
+        task: TaskState | None = None,
     ) -> None:
         """Атомарный upsert-снапшот: метаданные + полная замена истории.
 
@@ -193,8 +196,8 @@ class SessionStore:
                     INSERT INTO sessions
                         (id, name, title, system_prompt, settings_json, summary, compacted_upto,
                          facts, scratchpad, active_branch, branches_json, created_at, updated_at,
-                         project_id, active_profile_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         project_id, active_profile_id, task)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET
                         name = excluded.name,
                         system_prompt = excluded.system_prompt,
@@ -207,7 +210,8 @@ class SessionStore:
                         branches_json = excluded.branches_json,
                         updated_at = excluded.updated_at,
                         project_id = excluded.project_id,
-                        active_profile_id = excluded.active_profile_id
+                        active_profile_id = excluded.active_profile_id,
+                        task = excluded.task
                     """,
                 (
                     session_id,
@@ -225,6 +229,9 @@ class SessionStore:
                     now,
                     project_id,
                     active_profile_id,
+                    json.dumps(task.to_dict(), ensure_ascii=False)
+                    if task is not None and task.is_active
+                    else "{}",
                 ),
             )
             self._conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -298,7 +305,8 @@ class SessionStore:
             row = self._conn.execute(
                 """
                 SELECT name, system_prompt, settings_json, summary, compacted_upto,
-                       facts, active_branch, branches_json, scratchpad, active_profile_id
+                       facts, active_branch, branches_json, scratchpad, active_profile_id,
+                       task
                 FROM sessions WHERE id = ?
                 """,
                 (session_id,),
@@ -335,6 +343,7 @@ class SessionStore:
             branches=branches,
             history=history,
             active_profile_id=row[9] or "",
+            task=TaskState.from_dict(json.loads(row[10] or "{}")),
         )
 
     def delete(self, session_id: str) -> bool:
@@ -512,6 +521,7 @@ class SessionStore:
             history=data.history,
             facts=data.facts,
             scratchpad=data.scratchpad,
+            task=data.task,
             active_branch=data.active_branch,
             branches=data.branches,
             active_profile_id=data.active_profile_id,

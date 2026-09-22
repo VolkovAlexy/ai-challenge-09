@@ -13,6 +13,7 @@ import type {
   ProjectDTO,
   SessionInfoDTO,
   StreamEvent,
+  TaskCommandRequest,
 } from "./types";
 import { sseEvents } from "./sse";
 
@@ -124,6 +125,10 @@ export const api = {
   /** Рабочая память: заменить содержимое scratchpad. */
   putScratchpad: (id: string, content: string) =>
     request<{ content: string }>("PUT", `/agents/${id}/scratchpad`, { content }),
+
+  /** Команда состоянию задачи (конечный автомат): POST завершает → возвращает агента. */
+  taskCommand: (id: string, body: TaskCommandRequest) =>
+    request<AgentDTO>("POST", `/agents/${id}/task`, body),
 
   /** Ветка от сообщения: копия истории до message_index включительно + переключение. */
   forkAt: (id: string, messageIndex: number) =>

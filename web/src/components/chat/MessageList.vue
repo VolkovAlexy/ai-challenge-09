@@ -36,7 +36,7 @@ async function onAction(index: number, action: string): Promise<void> {
   }
   if (action === "remember") {
     await store.rememberMessage(message.content);
-    note("Сохранено в долговременную память (LONGTERM_MEMORY.md)");
+    note("Сохранено в долговременную память");
     return;
   }
   if (action === "branch") {

@@ -128,10 +128,15 @@ web/
 | `POST /api/agents/{id}/export` `{path?}` | экспорт в jsonl → `{path}` (`/export [file]`) |
 | `POST /api/agents/{id}/messages` `{content}` | отправить сообщение; ответ — SSE-поток (§5.2) |
 | `POST /api/agents/{id}/cancel` | отменить текущий ход агента |
+| `POST /api/agents/{id}/task` `TaskCommandRequest` | применить команду к автомату задачи (§5.4); возвращает `AgentDTO` |
 
 `AgentDTO`: `{ id, name, model, settings: {temperature, top_p, max_tokens, stop},
 system_prompt: {path, content}, context_used, context_window, streaming,
-compacting, scratchpad, memory_suggestion }`. `MessageDTO`: `{ id,
+compacting, scratchpad, memory_suggestion, task }`. `task` — состояние задачи
+как конечный автомат (`null`, если задача не задана): `{ phase, step, steps,
+expected_action, description, paused }`; `phase` ∈
+`planning | execution | validation | done`, `paused` — флаг паузы (пауза
+возможна на любом этапе). `MessageDTO`: `{ id,
 role: "user"|"assistant"|"system"|"tool", content,
 tool_name?: string, tool_calls?: string[], usage?: UsageDTO,
 error?: {kind, detail} }` (`tool_name` — имя инструмента у роли `tool`;
@@ -152,6 +157,7 @@ error?: {kind, detail} }` (`tool_name` — имя инструмента у ро
 | `delta` | `content` | дописать в текущее assistant-сообщение (батчинг, §7) |
 | `tool_message` | `message: MessageDTO` | артефакт tool-раунда: assistant с `tool_calls` либо результат инструмента (роль `tool`); вставить в историю (replace стрим-заглушки для assistant) |
 | `scratchpad` | `content` | обновить рабочую память (панель scratchpad) в live-режиме |
+| `task` | `task: TaskStateDTO \| null` | обновить состояние задачи (когда агент меняет его инструментом) |
 | `done` | `message: MessageDTO` (с `usage`) | зафиксировать сообщение, начислить счётчики |
 | `cancelled` | — | пометить ход отменённым |
 | `error` | `kind: "http"|"network"`, `detail` | показать ошибку как system-сообщение в чате; чат продолжается |
@@ -170,6 +176,18 @@ error?: {kind, detail} }` (`tool_name` — имя инструмента у ро
 `\n\n`, устойчивость к разрыву события между чанками, игнор полей `event:`/`id:`.
 `[DONE]` не ожидается: терминалы — события `done` / `cancelled` / `error` или
 закрытие потока.
+
+### 5.4 Состояние задачи (конечный автомат)
+
+`TaskCommandRequest`: `{ operation, description?, steps?, phase?, expected_action? }`,
+где `operation` ∈ `start | set_phase | advance | pause | resume | reset |
+set_expected_action`. Команда применяется к автомату агента (этапы
+`planning → execution → validation → done`; пауза — флаг на любом этапе).
+Ошибки: недопустимый переход → `409 {"detail": "недопустимый переход …"}`;
+неизвестный агент → `404`; невалидное значение фазы/ожидаемого действия → `400`.
+Управление идёт и через LLM-инструменты (`task_start`, `task_set_phase`,
+`task_advance_step`, `task_pause`, `task_resume`, `task_reset`, `task_read`,
+`task_set_expected_action`), которые меняют то же состояние.
 
 ## 6. Команды (slash) — поведение в UI
 

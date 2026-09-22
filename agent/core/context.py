@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 
 from agent.core.message import Message, Role
+from agent.core.task import TaskState
 from agent.memory.longterm import LONGTERM_HEADER, LONGTERM_INSTRUCTION
 
 RAG_HEADER = "Контекст из внешних источников (RAG):"
@@ -22,6 +23,7 @@ MEMORY_HEADER = "Долгосрочные воспоминания:"
 SUMMARY_HEADER = "Сводка ранее в диалоге:"
 FACTS_HEADER = "Важные факты диалога (ключ: значение):"
 SCRATCHPAD_HEADER = "Рабочая память (scratchpad — заметки по текущей задаче):"
+TASK_HEADER = "Активная задача (конечный автомат):"
 
 CHARS_PER_TOKEN = 4  # грубая оценка: для русского занижает в ~1.5–2 раза
 
@@ -70,14 +72,18 @@ class ContextBuilder:
         memories: list[str] | None = None,
         longterm: str | None = None,
         scratchpad: str | None = None,
+        task: TaskState | None = None,
     ) -> list[Message]:
         """system_prompt → (+facts, +саммари, +RAG, +memories, +longterm,
-        +scratchpad служебными сообщениями) → история.
+        +scratchpad, +задача служебными сообщениями) → история.
 
         `longterm` — содержимое долговременной памяти (markdown-файл, общий
         для всех агентов); идёт сразу после системного промпта вместе с
         инструкцией предлагать новые знания через [MEMORY_SUGGESTION].
         `scratchpad` — рабочая память текущей задачи (заметки агента).
+        `task` — состояние задачи как конечный автомат: добавляется только
+        при активной задаче, чтобы модель каждый ход видела этап/шаг/
+        ожидаемое действие (продолжение без повторных объяснений).
         """
         messages = [Message(role=Role.SYSTEM, content=system_prompt)]
         if longterm:
@@ -92,6 +98,10 @@ class ContextBuilder:
         if scratchpad:
             messages.append(
                 Message(role=Role.SYSTEM, content=SCRATCHPAD_HEADER + "\n" + scratchpad)
+            )
+        if task is not None and task.is_active:
+            messages.append(
+                Message(role=Role.SYSTEM, content=TASK_HEADER + "\n" + task.describe())
             )
         if facts:
             lines = "\n".join(f"- {key}: {value}" for key, value in sorted(facts.items()))

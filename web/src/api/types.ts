@@ -25,11 +25,25 @@ export interface MessageDTO {
   error?: { kind: string; detail: string };
 }
 
+
+
 export interface AgentSettingsDTO {
   temperature: number;
   top_p: number;
   max_tokens: number;
   stop: string[];
+}
+
+export type TaskPhase = "idle" | "planning" | "execution" | "validation" | "done";
+
+/** Состояние задачи — конечный автомат (этап, шаг, ожидаемое действие). */
+export interface TaskStateDTO {
+  phase: TaskPhase;
+  step: number;
+  steps: string[];
+  expected_action: string;
+  description: string;
+  paused: boolean;
 }
 
 export interface AgentDTO {
@@ -50,6 +64,8 @@ export interface AgentDTO {
   memory_suggestion: string | null;
   /** активный профиль роли чата ("" — без него) */
   active_profile_id?: string;
+  /** состояние задачи (конечный автомат); null/undefined — задача не задана */
+  task?: TaskStateDTO | null;
 }
 
 export interface ProviderDTO {
@@ -113,6 +129,24 @@ export interface PatchAgentDTO {
   active_profile_id?: string;
 }
 
+export type TaskCommandOperation =
+  | "start"
+  | "set_phase"
+  | "advance"
+  | "pause"
+  | "resume"
+  | "reset"
+  | "set_expected_action";
+
+/** Тело POST /api/agents/{id}/task — команда управления конечным автоматом. */
+export interface TaskCommandRequest {
+  operation: TaskCommandOperation;
+  description?: string;
+  steps?: string[];
+  phase?: TaskPhase;
+  expected_action?: string;
+}
+
 /** События SSE-потока ответа (§5.2). Терминалы: done / cancelled / error. */
 export type StreamEvent =
   | { event: "user_message"; message: MessageDTO }
@@ -122,6 +156,7 @@ export type StreamEvent =
   | { event: "reasoning_delta"; content: string }
   | { event: "tool_message"; message: MessageDTO }
   | { event: "scratchpad"; content: string }
+  | { event: "task"; task: TaskStateDTO | null }
   | { event: "done"; message: MessageDTO }
   | { event: "cancelled" }
   | { event: "memory_suggestion"; content: string }

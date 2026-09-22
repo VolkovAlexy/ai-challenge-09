@@ -36,6 +36,7 @@ function agentState(overrides: Partial<AgentState> = {}): AgentState {
     scratchpad: "",
     memorySuggestion: null,
     activeProfileId: "",
+    task: null,
     streamingReasoning: "",
     sessionId: null,
     tokensIn: 5000,

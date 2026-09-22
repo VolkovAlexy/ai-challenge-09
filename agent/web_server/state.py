@@ -7,15 +7,16 @@
 
 from __future__ import annotations
 
-import contextlib
+import json
 from dataclasses import dataclass, field
 
 from agent.commands.registry import CommandRegistry
 from agent.config.schema import AgentSettings, Config
 from agent.core.agent import Agent, AgentBusyError, TokenUsage
 from agent.core.message import Message, Role
+from agent.core.task import TaskPhase, TaskState
 from agent.llm.client import LLMClient
-from agent.memory.longterm import LongTermSource, ProjectLongTermMemory
+from agent.memory.longterm import ProjectLongTermMemory
 from agent.memory.persistence import ProfileInfo, ProjectInfo, SessionStore
 from agent.tools.registry import ToolRegistry
 from agent.web_server.dto import (
@@ -30,11 +31,13 @@ from agent.web_server.dto import (
     ProviderDTO,
     SessionInfoDTO,
     SystemPromptDTO,
+    TaskCommandOperation,
+    TaskCommandRequest,
+    TaskStateDTO,
     UsageDTO,
 )
 
 DEFAULT_SYSTEM_PROMPT_PATH = "SYSTEM_PROMPT.md"
-DEFAULT_LONGTERM_PATH = "LONGTERM_MEMORY.md"
 DEFAULT_PROJECT_ID = "default"
 DEFAULT_PROJECT_NAME = "По умолчанию"
 
@@ -63,7 +66,6 @@ class WebState:
         store: SessionStore,
         default_system_prompt: str,
         default_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
-        longterm: LongTermSource | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
@@ -76,18 +78,6 @@ class WebState:
         self.active_agent_id: str | None = None
         # проект по умолчанию всегда существует (верхний уровень иерархии памяти)
         self.store.ensure_project(DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME)
-        # миграция глобального markdown-файла в проект по умолчанию (однократная)
-        self._migrate_longterm(longterm)
-
-    def _migrate_longterm(self, source: LongTermSource | None) -> None:
-        """Переносит записи глобального LONGTERM_MEMORY.md в проект по умолчанию."""
-        if source is None:
-            return
-        if self.store.list_longterm(self.default_project_id):
-            return
-        for entry in source.entries():
-            with contextlib.suppress(ValueError):
-                self.store.append_longterm(self.default_project_id, entry)
 
     # --- доступ к записям ---
 
@@ -255,6 +245,7 @@ class WebState:
             len(memory.branches),
             tuple(sorted(memory.facts.items())),
             memory.scratchpad,
+            json.dumps(agent.memory.task.state.to_dict(), sort_keys=True, ensure_ascii=False),
             agent.active_profile_id,
         )
 
@@ -274,6 +265,7 @@ class WebState:
             branches=agent.memory.branches,
             project_id=agent.project_id,
             active_profile_id=agent.active_profile_id,
+            task=agent.memory.task.state,
         )
         record.fingerprint = self._fingerprint(record)
 
@@ -375,6 +367,21 @@ class WebState:
             scratchpad=agent.memory.scratchpad,
             memory_suggestion=agent.pending_memory_suggestion,
             active_profile_id=agent.active_profile_id,
+            task=WebState.task_dto(agent.memory.task.state),
+        )
+
+    @staticmethod
+    def task_dto(state: TaskState) -> TaskStateDTO | None:
+        """Состояние задачи для DTO; None — задачи нет (этап idle)."""
+        if not state.is_active:
+            return None
+        return TaskStateDTO(
+            phase=state.phase.value,
+            step=state.step,
+            steps=list(state.steps),
+            expected_action=state.expected_action,
+            description=state.description,
+            paused=state.paused,
         )
 
     def config_dto(self) -> ConfigDTO:
@@ -588,5 +595,37 @@ class WebState:
             record.agent.set_active_profile(profile_id, profile.content)
         else:
             record.agent.set_active_profile("", "")
+        self.persist(record)
+        return record
+
+    def apply_task_command(self, agent_id: str, body: TaskCommandRequest) -> AgentRecord:
+        """Применяет команду к автомату задачи агента и персистит изменение.
+
+        Несуществующий агент — KeyError; недопустимый переход — InvalidTaskTransition;
+        неверный этап/пустое действие — ValueError.
+        """
+        record = self._records.get(agent_id)
+        if record is None:
+            raise KeyError("агент не найден")
+        machine = record.agent.memory.task
+        operation = body.operation
+        if operation is TaskCommandOperation.START:
+            machine.start(
+                body.description, body.steps, expected_action=body.expected_action
+            )
+        elif operation is TaskCommandOperation.SET_PHASE:
+            machine.transition(TaskPhase(body.phase), expected_action=body.expected_action)
+        elif operation is TaskCommandOperation.ADVANCE:
+            machine.advance_step(body.expected_action)
+        elif operation is TaskCommandOperation.PAUSE:
+            machine.pause()
+        elif operation is TaskCommandOperation.RESUME:
+            machine.resume()
+        elif operation is TaskCommandOperation.RESET:
+            machine.reset()
+        elif operation is TaskCommandOperation.SET_EXPECTED_ACTION:
+            if not body.expected_action:
+                raise ValueError("expected_action не может быть пустым")
+            machine.set_expected_action(body.expected_action)
         self.persist(record)
         return record

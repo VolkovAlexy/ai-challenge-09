@@ -48,6 +48,7 @@ my_agent/
     ├── core/
     │   ├── agent.py          # класс Agent: ask(), настройки, промпт, сессия
     │   ├── context.py        # ContextBuilder: собирает массив messages
+    │   ├── task.py           # [задача] TaskState + TaskStateMachine (конечный автомат)
     │   └── message.py        # модели: Role, Message, ChatRequest, ChatChunk
     ├── llm/
     │   └── client.py         # OpenAI-compatible клиент: astream(), ретраи
@@ -59,6 +60,8 @@ my_agent/
     │   └── longterm.py       # [задел] протокол LongTermMemory (stub в v1)
     ├── tools/
     │   ├── registry.py       # [задел] ToolRegistry: {name, description, schema, execute}
+    │   ├── scratchpad.py     # scratchpad-инструменты (рабочая память)
+    │   ├── task.py           # [задача] task-инструменты (конечный автомат)
     │   └── mcp.py            # [задел] MCP-адаптер (stub в v1)
     └── ui/
         ├── app.py            # Textual App: TabbedContent (вкладка = агент), bindings
@@ -170,6 +173,27 @@ my_agent/
       префикса и нового саммари, заполнение окна до/после; заметка выводится
       даже если ход после сжатия завершился ошибкой); жёлтый индикатор
       `context N/window (P%)` в статус-баре при превышении порога.
+11. **Состояние задачи — конечный автомат.**
+    - Задача формализована как явное состояние (`agent/core/task.py`): фаза
+      (`planning → execution → validation → done`), текущий шаг (`step` из
+      плана `steps`), **ожидаемое действие** (`expected_action`) и флаг
+      `paused`. Пауза ортогональна фазе — возможна на любом этапе и не меняет
+      сам автомат.
+    - `TaskState` — plain-Python dataclass (сериализуемый); `TaskStateMachine`
+      владеет состоянием и валидирует переходы по таблице `_ALLOWED`
+      (недопустимый переход → `InvalidTaskTransition`).
+    - Состояние хранится на уровне сессии (как scratchpad, в
+      `InMemorySession.task`), автосохраняется в SQLite (`sessions.task`) и в
+      jsonl; переживает `load_session`/`export`/`apply_session`.
+    - `ContextBuilder.build_messages(task=...)` вставляет состояние задачи
+      SYSTEM-блоком в проекцию (после scratchpad), поэтому модель каждый ход
+      видит актуальную фазу/шаг/ожидаемое действие — это позволяет
+      «продолжить без повторных объяснений» после паузы.
+    - Управление: LLM-инструменты `task_read`, `task_start`, `task_set_phase`,
+      `task_advance_step`, `task_set_expected_action`, `task_pause`,
+      `task_resume`, `task_reset` (регистрируются в `Agent` наравне со
+      scratchpad-инструментами); в web `POST /api/agents/{id}/task` — кнопки
+      UI используют то же состояние. Slash-команд нет (сознательно).
 
 ## 5. Формат config.json (multi-provider)
 

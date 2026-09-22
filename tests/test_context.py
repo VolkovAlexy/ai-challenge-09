@@ -1,7 +1,8 @@
 """ContextBuilder: сборка массива messages."""
 
-from agent.core.context import FACTS_HEADER, ContextBuilder, apply_sliding_window
+from agent.core.context import FACTS_HEADER, TASK_HEADER, ContextBuilder, apply_sliding_window
 from agent.core.message import FunctionCall, Message, Role, ToolCall
+from agent.core.task import TaskState, TaskStateMachine
 
 
 def test_apply_sliding_window() -> None:
@@ -34,6 +35,26 @@ def test_facts_block_in_projection() -> None:
 def test_empty_facts_not_projected() -> None:
     builder = ContextBuilder()
     messages = builder.build_messages("SP", [], facts={})
+    assert [m.role for m in messages] == [Role.SYSTEM]
+
+
+def test_active_task_projected_into_context() -> None:
+    builder = ContextBuilder()
+    machine = TaskStateMachine()
+    machine.start("написать модуль", ["сделать", "проверить"])
+    machine.to_execution("протестировать")
+    messages = builder.build_messages("SP", [], task=machine.state)
+    roles = [m.role for m in messages]
+    assert roles == [Role.SYSTEM, Role.SYSTEM]
+    assert TASK_HEADER in messages[1].content
+    assert "Этап: выполнение" in messages[1].content
+    assert "Ожидаемое действие: протестировать" in messages[1].content
+    assert "Пауза: нет" in messages[1].content
+
+
+def test_idle_task_not_projected() -> None:
+    builder = ContextBuilder()
+    messages = builder.build_messages("SP", [], task=TaskState())
     assert [m.role for m in messages] == [Role.SYSTEM]
 
 
