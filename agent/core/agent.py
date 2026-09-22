@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,12 +31,13 @@ from agent.core.message import (
     ToolCall,
     Usage,
 )
-from agent.core.task import TaskState
+from agent.core.task import TaskPhase, TaskState
 from agent.llm.client import LLMClient, LLMError
 from agent.memory.facts import FactsExtractor
 from agent.memory.longterm import LongTermSource
 from agent.memory.session import InMemorySession, SessionData, save_session
-from agent.tools.registry import ToolRegistry
+from agent.tools.invariants import invariant_tools
+from agent.tools.registry import Tool, ToolRegistry
 from agent.tools.scratchpad import parse_tool_arguments, scratchpad_tools
 from agent.tools.task import task_tools
 
@@ -46,8 +47,16 @@ CANCELLED_MARK = "… (запрос отменён)"
 # считаем, что провайдер обрезал контекст (модель не видела часть истории)
 TRUNCATION_RATIO = 0.7
 
-# максимум LLM-вызовов на ход при исполнении tool_calls (1 + раунды инструментов)
+# максимум tool-раундов на ход; последний LLM-вызов идёт без инструментов,
+# чтобы модель завершала ход текстом, а не «висящим» tool_call без результата
 MAX_TOOL_ROUNDS = 5
+
+# автопилот: после подтверждения плана агент сам гонит задачу до фазы «готово»
+# (выполнение → проверка → готово), подсказывая себе продолжение, пока фаза
+# меняется или продвигается шаг. Каждый «под-ход» ограничен MAX_TOOL_ROUNDS.
+AUTOPILOT_MAX_TURNS = 15
+# префикс внутреннего «продолжай», который фронт скрывает из чата
+AUTOPILOT_MARKER = "[АВТОПРОДОЛЖЕНИЕ] "
 
 # предложение агента сохранить знание в долговременную память (вырезается из ответа)
 MEMORY_SUGGESTION_RE = re.compile(
@@ -96,6 +105,18 @@ class SessionTotals:
         return self.in_tokens + self.out_tokens
 
 
+@dataclass
+class SubagentEvent:
+    """Событие работы субагента (дренируется SSE-стримером в UI).
+
+    `kind` — "started" | "delta" | "done"; `profile` — имя роли субагента.
+    """
+
+    kind: str
+    profile: str
+    content: str = ""
+
+
 class AgentBusyError(Exception):
     """У агента уже есть активный запрос."""
 
@@ -113,6 +134,7 @@ class Agent:
         longterm: LongTermSource | None = None,
         project_id: str = "",
         active_profile_id: str = "",
+        with_task_tools: bool = True,
     ) -> None:
         self.name = name
         self.settings = settings
@@ -131,8 +153,14 @@ class Agent:
             self._tools.register(tool)
         for tool in scratchpad_tools(self.memory):
             self._tools.register(tool)
-        for tool in task_tools(self.memory):
-            self._tools.register(tool)
+        # субагенты (делегирование) не используют конечный автомат задачи:
+        # они — чистые исполнители, получают задачу+контекст от оркестратора
+        # и не планируют/не запрашивают подтверждений (with_task_tools=False).
+        if with_task_tools:
+            for tool in task_tools(self.memory):
+                self._tools.register(tool)
+            for tool in invariant_tools(self.memory):
+                self._tools.register(tool)
         # долговременная память: уровень проекта (своя у каждого проекта)
         self._longterm = longterm
         self._task: asyncio.Task[str] | None = None
@@ -164,6 +192,8 @@ class Agent:
         # артефакты tool-раундов текущего хода (индекс в истории, сообщение):
         # дренирует SSE-стример (web), чтобы фронт видел вызовы инструментов
         self.turn_events: list[tuple[int, Message]] = []
+        # события субагентов текущего хода (оркестратор делегирует дрену SSE-стримеру)
+        self.subagent_events: list[SubagentEvent] = []
         # --- токены (только рантайм, в сессии не сохраняются) ---
         self.last_usage: TokenUsage | None = None
         # индекс assistant-сообщения в истории → токены его хода
@@ -270,6 +300,7 @@ class Agent:
         longterm_raw = self._longterm.load() if self._longterm is not None else ""
         longterm = longterm_raw.strip() or None
         scratchpad = self.memory.scratchpad.strip() or None
+        invariants = self.memory.invariants or None
         task = self.memory.task.state
         strategy = self.settings.context_strategy
         if strategy == "none":
@@ -278,6 +309,7 @@ class Agent:
                 self.memory.history,
                 longterm=longterm,
                 scratchpad=scratchpad,
+                invariants=invariants,
                 task=task,
             )
         if strategy == "summary":
@@ -287,6 +319,7 @@ class Agent:
                 summary=self.memory.summary,
                 longterm=longterm,
                 scratchpad=scratchpad,
+                invariants=invariants,
                 task=task,
             )
         # sliding / facts: скользящее окно по полной истории
@@ -296,6 +329,7 @@ class Agent:
             facts=self.memory.facts or None if strategy == "facts" else None,
             longterm=longterm,
             scratchpad=scratchpad,
+            invariants=invariants,
             task=task,
         )
 
@@ -340,8 +374,13 @@ class Agent:
             return True
         return False
 
-    async def ask(self, text: str) -> str:
+    async def ask(
+        self, text: str, *, on_delta: Callable[[str], None] | None = None
+    ) -> str:
         """Полный ход: user → LLM-стрим → assistant в истории. Возвращает ответ.
+
+        `on_delta` — колбэк на каждый чанк контента (используется делегированием:
+        оркестратор пробрасывает ответ субагента в свой subagent_events).
 
         LLMError пробрасывается (UI показывает в чате, чат продолжается).
         При отмене: частичный ответ сохраняется в истории, CancelledError — дальше.
@@ -356,11 +395,16 @@ class Agent:
         повторяется — не более MAX_TOOL_ROUNDS раундов на ход.
         Блок [MEMORY_SUGGESTION] в ответе вырезается: текст знания ждёт
         решения пользователя (self._pending_memory_suggestion).
+        Автопилот: после подтверждения плана агент сам гонит задачу до фазы
+        «готово», подсказывая себе продолжение (`AUTOPILOT_MARKER` и
+        `AUTOPILOT_MAX_TURNS`), пока фаза/шаг продвигаются; пользователь ничего
+        не вводит до фазы «готово».
         """
         self.compaction_note = None
         self.facts_note = None
         self._pending_memory_suggestion = None
         self.turn_events = []
+        self.subagent_events = []
         self.memory.add(Message(role=Role.USER, content=text))
         self._stream_text = ""
         self._stream_reasoning = ""
@@ -376,70 +420,96 @@ class Agent:
                 await self._update_facts(provider, model)
             await self._maybe_compact(provider, model)
             api_tools = self._tools.to_api_tools() or None
-            for round_no in range(MAX_TOOL_ROUNDS + 1):
-                messages = self._projection()
-                # живая оценка контекста — видна в статус-баре ещё до ответа API
-                self.last_usage = TokenUsage(
-                    prompt_tokens=estimate_messages(messages), estimated=True
-                )
-                request = ChatRequest(
-                    model=model,
-                    messages=messages,
-                    temperature=self.settings.temperature,
-                    top_p=self.settings.top_p,
-                    max_tokens=self.settings.max_tokens,
-                    stop=self.settings.stop or None,
-                    tools=api_tools,
-                )
-                async for chunk in self._llm.astream(request, provider.api_base, provider.api_key):
-                    if chunk.usage is not None:
-                        self._server_usage = chunk.usage
-                        self._round_usages.append(chunk.usage)
-                    if chunk.finish_reason:
-                        self._finish_reason = chunk.finish_reason
-                    if chunk.content:
-                        self._stream_text += chunk.content
-                    if chunk.reasoning:
-                        self._stream_reasoning += chunk.reasoning
-                    self._accumulate_tool_calls(chunk)
-                if not self._stream_text and not self._stream_tcs:
-                    # пустой ответ не сохраняем: он бесполезен в истории и отравил бы
-                    # проекцию следующего запроса. Типичный случай — thinking-модель
-                    # израсходовала max_tokens размышлениями (delta.reasoning) и не
-                    # начала видимый ответ (finish_reason=length).
-                    if self._finish_reason == "length":
-                        raise LLMError(
-                            "модель исчерпала max_tokens на размышления и не начала ответ — "
-                            "увеличьте лимит: /max-tokens <n>"
-                        )
-                    raise LLMError(
-                        f"модель вернула пустой ответ (finish_reason: {self._finish_reason})"
+            api_tools = self._tools.to_api_tools() or None
+            prev_sig = self._task_signature()
+            answer = ""
+            for _autopilot_turn in range(AUTOPILOT_MAX_TURNS + 1):
+                for round_no in range(MAX_TOOL_ROUNDS + 1):
+                    messages = self._projection()
+                    # живая оценка контекста — видна в статус-баре ещё до ответа API
+                    self.last_usage = TokenUsage(
+                        prompt_tokens=estimate_messages(messages), estimated=True
                     )
-                if not self._stream_tcs or round_no >= MAX_TOOL_ROUNDS:
-                    break
-                # раунд инструментов: результаты в историю, затем новый запрос
+                    # На последнем раунде инструменты не предлагаем: модель обязана
+                    # завершить ход текстом, а не оставить «висящий» tool_call без
+                    # результата (иначе ход обрывался и требовал ручного «продолжай»).
+                    tools = api_tools if round_no < MAX_TOOL_ROUNDS else None
+                    request = ChatRequest(
+                        model=model,
+                        messages=messages,
+                        temperature=self.settings.temperature,
+                        top_p=self.settings.top_p,
+                        max_tokens=self.settings.max_tokens,
+                        stop=self.settings.stop or None,
+                        tools=tools,
+                    )
+                    async for chunk in self._llm.astream(
+                        request, provider.api_base, provider.api_key
+                    ):
+                        if chunk.usage is not None:
+                            self._server_usage = chunk.usage
+                            self._round_usages.append(chunk.usage)
+                        if chunk.finish_reason:
+                            self._finish_reason = chunk.finish_reason
+                        if chunk.content:
+                            self._stream_text += chunk.content
+                            if on_delta is not None:
+                                on_delta(chunk.content)
+                        if chunk.reasoning:
+                            self._stream_reasoning += chunk.reasoning
+                        self._accumulate_tool_calls(chunk)
+                    if not self._stream_text and not self._stream_tcs:
+                        # пустой ответ не сохраняем: он бесполезен в истории и отравил бы
+                        # проекцию следующего запроса. Типичный случай — thinking-модель
+                        # израсходовала max_tokens размышлениями (delta.reasoning) и не
+                        # начала видимый ответ (finish_reason=length).
+                        if self._finish_reason == "length":
+                            raise LLMError(
+                                "модель исчерпала max_tokens на размышления и не начала ответ — "
+                                "увеличьте лимит: /max-tokens <n>"
+                            )
+                        raise LLMError(
+                            f"модель вернула пустой ответ (finish_reason: {self._finish_reason})"
+                        )
+                    if not self._stream_tcs or round_no >= MAX_TOOL_ROUNDS:
+                        break
+                    # раунд инструментов: результаты в историю, затем новый запрос
+                    assistant_msg = Message(
+                        role=Role.ASSISTANT,
+                        content=self._stream_text or None,
+                        reasoning=self._stream_reasoning or None,
+                        tool_calls=self.streaming_tool_calls or None,
+                    )
+                    self.memory.add(assistant_msg)
+                    self.turn_events.append((len(self.memory.history) - 1, assistant_msg))
+                    await self._execute_tool_calls(self.streaming_tool_calls)
+                    self._stream_text = ""
+                    self._stream_reasoning = ""
+                    self._stream_tcs = {}
+                    self._finish_reason = None
+                answer = self._extract_memory_suggestion(self._stream_text)
                 assistant_msg = Message(
-                    role=Role.ASSISTANT,
-                    content=self._stream_text or None,
-                    reasoning=self._stream_reasoning or None,
-                    tool_calls=self.streaming_tool_calls or None,
-                )
-                self.memory.add(assistant_msg)
-                self.turn_events.append((len(self.memory.history) - 1, assistant_msg))
-                await self._execute_tool_calls(self.streaming_tool_calls)
-                self._stream_text = ""
-                self._stream_reasoning = ""
-                self._stream_tcs = {}
-                self._finish_reason = None
-            answer = self._extract_memory_suggestion(self._stream_text)
-            self.memory.add(
-                Message(
                     role=Role.ASSISTANT,
                     content=answer or None,
                     reasoning=self._stream_reasoning or None,
                     tool_calls=self.streaming_tool_calls or None,
                 )
-            )
+                self.memory.add(assistant_msg)
+                # автопилот: пока задача в выполнении/проверке и шаг/фаза продвинулись,
+                # подсказываем модели продолжение сами — пользователь ничего не вводит
+                # до фазы «готово».
+                if not self._autopilot_continue(prev_sig):
+                    break
+                prev_sig = self._task_signature()
+                # промежуточный ответ показываем в чате отдельным сообщением
+                self.turn_events.append((len(self.memory.history) - 1, assistant_msg))
+                self.memory.add(
+                    Message(role=Role.USER, content=self._autopilot_prompt())
+                )
+                self._stream_text = ""
+                self._stream_reasoning = ""
+                self._stream_tcs = {}
+                self._finish_reason = None
             self._finalize_usage(messages, assistant_added=True)
             return answer
         except asyncio.CancelledError:
@@ -478,6 +548,44 @@ class Agent:
         cleaned = MEMORY_SUGGESTION_RE.sub("", text).strip()
         return cleaned
 
+    def _task_signature(self) -> tuple[str, int] | None:
+        """Сигнатура задачи (фаза, шаг) для детекта прогресса автопилота."""
+        state = self.memory.task.state
+        if not state.is_active:
+            return None
+        return (state.phase.value, state.step)
+
+    def _autopilot_continue(self, prev_sig: tuple[str, int] | None) -> bool:
+        """Продолжать ли автопилот: задача в выполнении/проверке, и шаг/фаза продвинулись.
+
+        Если фаза не изменилась и шаг не сдвинулся — модель «выдохлась» и ход
+        завершается, чтобы не зациклиться (пользователь тогда продолжит сам).
+        """
+        state = self.memory.task.state
+        if not state.is_active or state.paused:
+            return False
+        if state.phase not in (TaskPhase.EXECUTION, TaskPhase.VALIDATION):
+            return False
+        current = self._task_signature()
+        return not (prev_sig is not None and current == prev_sig)
+
+    def _autopilot_prompt(self) -> str:
+        """Внутренняя подсказка модели продолжить задачу (скрывается из чата)."""
+        state = self.memory.task.state
+        if state.phase is TaskPhase.VALIDATION:
+            return (
+                f"{AUTOPILOT_MARKER}Продолжи проверку автоматически: проверь результат "
+                "по «Ограничениям». Если всё в порядке — заверши: set_phase(done). "
+                "Если есть правки — вернись в выполнение: set_phase(execution). "
+                "Если план нужно скорректировать — вернись в планирование: "
+                "set_phase(planning). Не останавливайся до фазы «готово»."
+            )
+        return (
+            f"{AUTOPILOT_MARKER}Продолжи выполнение плана автоматически: выполни "
+            "текущий шаг (при необходимости делегируй субагенту через delegate), "
+            "продвигай шаги (task_advance_step). Не останавливайся до фазы «готово»."
+        )
+
     @property
     def pending_memory_suggestion(self) -> str | None:
         """Предложение сохранить знание в долговременную память (читает UI)."""
@@ -511,6 +619,26 @@ class Agent:
         return Message(
             role=Role.TOOL, content=output, tool_call_id=call.id, name=call.function.name
         )
+
+    def register_tools(self, tools: Sequence[Tool]) -> None:
+        """Регистрирует инструменты в per-agent реестре (например, делегирование).
+
+        Вызов безопасен в любой момент: инструменты добавляются к уже
+        зарегистрированным; повторное имя перезаписывается.
+        """
+        for tool in tools:
+            self._tools.register(tool)
+
+    # --- события субагентов (оркестратор → SSE-стример) ---
+
+    def begin_subagent(self, profile: str) -> None:
+        self.subagent_events.append(SubagentEvent(kind="started", profile=profile))
+
+    def stream_subagent(self, profile: str, content: str) -> None:
+        self.subagent_events.append(SubagentEvent(kind="delta", profile=profile, content=content))
+
+    def end_subagent(self, profile: str) -> None:
+        self.subagent_events.append(SubagentEvent(kind="done", profile=profile))
 
     def _finalize_usage(self, messages: list[Message], *, assistant_added: bool) -> None:
         """Фиксирует токены завершившегося хода и привязывает их к ответу ассистента.
@@ -684,6 +812,7 @@ class Agent:
             compacted_upto=self.memory.compacted_upto,
             history=self.memory.history,
             facts=self.memory.facts,
+            invariants=self.memory.invariants,
             task=self.memory.task.state,
             active_branch=self.memory.active_branch,
             branches=self.memory.branches,
@@ -700,6 +829,7 @@ class Agent:
             self.memory.add(message)
         self.memory.facts = dict(data.facts)
         self.memory.scratchpad = data.scratchpad
+        self.memory.invariants = list(data.invariants)
         self.memory.task.state = data.task if data.task is not None else TaskState()
         self.memory.restore_branches(data.branches, active=data.active_branch)
         self.active_profile_id = data.active_profile_id
@@ -746,6 +876,7 @@ class Agent:
         self.compaction_note = None
         self.facts_note = None
         self._pending_memory_suggestion = None
+        self.subagent_events = []
 
     def request_compaction(self) -> None:
         """Форсирует сжатие префикса истории при следующем ходе (команда /compact)."""

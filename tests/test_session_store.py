@@ -183,3 +183,31 @@ def test_snapshot_persists_task_state(tmp_path: Path) -> None:
     assert data.task.description == "написать модуль"
     assert data.task.steps == ["подготовить", "реализовать"]
     store.close()
+
+
+def test_snapshot_persists_invariants(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "s.db")
+    sid = store.new_id()
+    store.snapshot(
+        sid,
+        "chat",
+        make_settings(),
+        "SP",
+        [Message(role=Role.USER, content="привет")],
+        invariants=["не удалять лог", "императив"],
+    )
+
+    data = store.get(sid)
+    assert data is not None
+    assert data.invariants == ["не удалять лог", "императив"]
+    store.close()
+
+
+def test_snapshot_default_invariants_empty(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "s.db")
+    sid = store.new_id()
+    store.snapshot(sid, "chat", make_settings(), "SP", [])
+    data = store.get(sid)
+    assert data is not None
+    assert data.invariants == []
+    store.close()

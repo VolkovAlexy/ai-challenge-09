@@ -125,10 +125,11 @@ async def agent_stream(
     task_sent = json.dumps(
         agent.memory.task.state.to_dict(), sort_keys=True, ensure_ascii=False
     )
+    invariants_sent = list(agent.memory.invariants)
 
     async def drain_tool_events() -> AsyncIterator[dict[str, str]]:
         """Артефакты tool-раундов: сообщения + изменившийся scratchpad/задача."""
-        nonlocal scratchpad_sent, task_sent
+        nonlocal scratchpad_sent, task_sent, invariants_sent
         while agent.turn_events:
             idx, msg = agent.turn_events.pop(0)
             yield _sse("tool_message", {"message": state.message_dto(msg, idx).model_dump()})
@@ -145,6 +146,23 @@ async def agent_stream(
                 "task",
                 {"task": payload.model_dump() if payload is not None else None},
             )
+        if agent.memory.invariants != invariants_sent:
+            invariants_sent = list(agent.memory.invariants)
+            yield _sse("invariants", {"invariants": agent.memory.invariants})
+
+    async def drain_subagent_events() -> AsyncIterator[dict[str, str]]:
+        """Активность субагентов (delegate): started/delta/done-события."""
+        while agent.subagent_events:
+            event = agent.subagent_events.pop(0)
+            profile = event.profile
+            if event.kind == "started":
+                yield _sse("subagent_started", {"profile": profile})
+            elif event.kind == "delta":
+                yield _sse(
+                    "subagent_delta", {"profile": profile, "content": event.content}
+                )
+            elif event.kind == "done":
+                yield _sse("subagent_done", {"profile": profile})
 
     try:
         while not task.done():
@@ -157,6 +175,8 @@ async def agent_stream(
                     yield _sse("compaction_done", payload)
                 compaction_active = False
             async for event in drain_tool_events():
+                yield event
+            async for event in drain_subagent_events():
                 yield event
             full = _visible_text(agent.streaming_text)
             if len(full) < len(sent):
@@ -176,6 +196,8 @@ async def agent_stream(
 
         # финальный дрен: tool-артефакты конца хода уходят до done
         async for event in drain_tool_events():
+            yield event
+        async for event in drain_subagent_events():
             yield event
 
         if task.cancelled():

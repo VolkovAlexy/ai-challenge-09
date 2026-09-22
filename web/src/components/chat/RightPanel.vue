@@ -1,25 +1,66 @@
 <script setup lang="ts">
 // Toolbar правой панели + сама панель: горизонтальная полоса вверху области чата,
-// кнопки «Память» и «Настройки» — справа. Тело панели раскрывается справа колонной
-// и отодвигает колонку сообщений (не перекрывает её). Заголовок панели — в её хедере.
-import { ref } from "vue";
+// кнопки «Задача», «Память», «Профили», «Настройки» — справа. Тело панели раскрывается
+// справа колонной и отодвигает колонку сообщений (не перекрывает её).
+// Заголовок панели — в её хедере.
+import { computed, ref } from "vue";
 import { NButton, NScrollbar } from "naive-ui";
+import { useAgentsStore } from "@/stores/agents";
 import MemoryPanel from "./MemoryPanel.vue";
 import ProfilePanel from "./ProfilePanel.vue";
+import TaskPanel from "./TaskPanel.vue";
 
-type Tab = "memory" | "profiles" | "settings" | null;
+type Tab = "task" | "memory" | "profiles" | "settings" | null;
 
 const activeTab = ref<Tab>(null);
 
 function toggle(tab: Exclude<Tab, null>): void {
   activeTab.value = activeTab.value === tab ? null : tab;
 }
+
+const store = useAgentsStore();
+const task = computed(() => store.activeAgent?.task ?? null);
+const PHASE_SHORT: Record<string, string> = {
+  idle: "без задачи",
+  planning: "планирование",
+  execution: "выполнение",
+  validation: "проверка",
+  done: "готово",
+};
+/** компактная строка-статус для полосы: «выполнение · 3/6» */
+const taskSummary = computed(() => {
+  const t = task.value;
+  if (t === null) return null;
+  let s = PHASE_SHORT[t.phase] ?? t.phase;
+  if (t.steps.length > 0) {
+    s += ` · ${Math.min(t.step, t.steps.length)}/${t.steps.length}`;
+  }
+  return s;
+});
+
+const TITLES: Record<Exclude<Tab, null>, string> = {
+  task: "Задача",
+  memory: "Память",
+  profiles: "Профили",
+  settings: "Настройки",
+};
+const rpTitle = computed(() => (activeTab.value === null ? "" : TITLES[activeTab.value]));
 </script>
 
 <template>
   <div class="right-panel">
     <div class="rp-bar">
       <div class="rp-actions">
+        <n-button
+          class="rp-bar-task"
+          :class="{ active: activeTab === 'task' }"
+          quaternary
+          title="Задача"
+          @click="toggle('task')"
+        >
+          <span class="rp-bar-icon" aria-hidden="true">📋</span>
+          <span v-if="taskSummary !== null" class="rp-bar-task-text">{{ taskSummary }}</span>
+        </n-button>
         <n-button
           class="rp-bar-btn"
           :class="{ active: activeTab === 'memory' }"
@@ -54,13 +95,12 @@ function toggle(tab: Exclude<Tab, null>): void {
       <transition name="rp-slide">
         <div v-if="activeTab !== null" class="rp-body">
           <div class="rp-header">
-            <span class="rp-title">
-              {{ activeTab === "memory" ? "Память" : activeTab === "profiles" ? "Профили" : "Настройки" }}
-            </span>
+            <span class="rp-title">{{ rpTitle }}</span>
           </div>
           <n-scrollbar class="rp-body-scroll">
             <div class="rp-body-content">
-              <MemoryPanel v-if="activeTab === 'memory'" :active="true" />
+              <TaskPanel v-if="activeTab === 'task'" :active="true" />
+              <MemoryPanel v-else-if="activeTab === 'memory'" :active="true" />
               <ProfilePanel v-else-if="activeTab === 'profiles'" :active="true" />
               <div v-else class="rp-placeholder">Настройки — следующая итерация</div>
             </div>
@@ -116,6 +156,27 @@ function toggle(tab: Exclude<Tab, null>): void {
 .rp-bar-icon {
   font-size: 15px;
   line-height: 1;
+}
+
+.rp-bar-task {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  height: 28px !important;
+  border-radius: 4px;
+  max-width: 220px;
+}
+
+.rp-bar-task.active {
+  color: #7aa2f7;
+  background: #1c212c;
+}
+
+.rp-bar-task-text {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-main {

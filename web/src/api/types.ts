@@ -40,10 +40,15 @@ export type TaskPhase = "idle" | "planning" | "execution" | "validation" | "done
 export interface TaskStateDTO {
   phase: TaskPhase;
   step: number;
+  /** шаги ВЫПОЛНЕНИЯ плана */
   steps: string[];
+  /** шаги ПРОВЕРКИ плана */
+  validation_steps: string[];
   expected_action: string;
   description: string;
   paused: boolean;
+  /* план подтверждён пользователем — только тогда можно перейти в «выполнение» */
+  plan_confirmed: boolean;
 }
 
 export interface AgentDTO {
@@ -66,6 +71,8 @@ export interface AgentDTO {
   active_profile_id?: string;
   /** состояние задачи (конечный автомат); null/undefined — задача не задана */
   task?: TaskStateDTO | null;
+  /** ограничения (инварианты) сессии */
+  invariants?: string[];
 }
 
 export interface ProviderDTO {
@@ -136,13 +143,17 @@ export type TaskCommandOperation =
   | "pause"
   | "resume"
   | "reset"
-  | "set_expected_action";
+  | "set_expected_action"
+  | "confirm_plan";
 
 /** Тело POST /api/agents/{id}/task — команда управления конечным автоматом. */
 export interface TaskCommandRequest {
   operation: TaskCommandOperation;
   description?: string;
   steps?: string[];
+  validation_steps?: string[];
+  /* advance: отметить текущий шаг выполненным и перейти дальше */
+  done?: boolean;
   phase?: TaskPhase;
   expected_action?: string;
 }
@@ -155,8 +166,12 @@ export type StreamEvent =
   | { event: "delta"; content: string }
   | { event: "reasoning_delta"; content: string }
   | { event: "tool_message"; message: MessageDTO }
+  | { event: "subagent_started"; profile: string }
+  | { event: "subagent_delta"; profile: string; content: string }
+  | { event: "subagent_done"; profile: string }
   | { event: "scratchpad"; content: string }
   | { event: "task"; task: TaskStateDTO | null }
+  | { event: "invariants"; invariants: string[] }
   | { event: "done"; message: MessageDTO }
   | { event: "cancelled" }
   | { event: "memory_suggestion"; content: string }

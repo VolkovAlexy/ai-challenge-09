@@ -16,6 +16,7 @@ import httpx
 
 from agent.config.schema import AgentSettings, validate_config
 from agent.core.agent import Agent
+from agent.core.context import INVARIANTS_HEADER
 from agent.core.message import ChatChunk, Message, Role
 from agent.memory.longterm import LongTermSource, ProjectLongTermMemory
 from agent.memory.persistence import SessionStore
@@ -90,6 +91,25 @@ def test_projection_without_longterm(tmp_path) -> None:
     agent, _ = make_agent([ChatChunk(content="ok")])
     messages = agent._projection()
     assert [m.role for m in messages] == [Role.SYSTEM]
+
+
+def test_projection_contains_invariants() -> None:
+    agent, _ = make_agent([ChatChunk(content="ok")])
+    agent.memory.invariants = ["не удалять лог", "использовать только python"]
+    messages = agent._projection()
+    contents = "\n".join(m.content or "" for m in messages)
+    assert INVARIANTS_HEADER in contents
+    assert "- не удалять лог" in contents
+    assert "- использовать только python" in contents
+
+
+def test_projection_deepcopies_invariants() -> None:
+    """Инварианты не мутируют через проекцию (копия списка)."""
+    agent, _ = make_agent([ChatChunk(content="ok")])
+    agent.memory.invariants = ["a"]
+    before = agent.memory.invariants
+    agent._projection()
+    assert agent.memory.invariants == before
 
 
 # --- MEMORY_SUGGESTION ---
@@ -192,9 +212,9 @@ def test_write_scratchpad_via_tool_loop() -> None:
     tool_msg = agent.memory.history[2]
     assert tool_msg.role is Role.TOOL
     assert "Рабочая память обновлена" in (tool_msg.content or "")
-    # инструменты переданы в запрос к LLM: 3 scratchpad + 8 task
+    # инструменты переданы в запрос к LLM: 3 scratchpad + 9 task + 4 invariants
     tools = getattr(llm.seen[0], "tools", None)
-    assert tools is not None and len(tools) == 11
+    assert tools is not None and len(tools) == 16
 
 
 def test_append_and_read_scratchpad_tools() -> None:
@@ -224,6 +244,91 @@ def test_append_and_read_scratchpad_tools() -> None:
     third = getattr(llm.seen[2], "messages", [])
     tool_msgs = [m for m in third if m.role is Role.TOOL]
     assert any("шаг 1" in (m.content or "") for m in tool_msgs)
+
+
+def test_invariant_add_remove_list_tools() -> None:
+    """Подряд два раунда инструментов: invariant_add, затем invariant_list."""
+    agent, llm = make_round_agent(
+        [
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        _tcd(
+                            index=0,
+                            id="i1",
+                            name="invariant_add",
+                            args='{"text": "не удалять лог"}',
+                        )
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        _tcd(index=0, id="i2", name="invariant_list", args="{}")
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [ChatChunk(content="ясно"), ChatChunk(finish_reason="stop")],
+        ]
+    )
+    answer = asyncio.run(agent.ask("запомни"))
+    assert answer == "ясно"
+    assert agent.memory.invariants == ["не удалять лог"]
+    # инструменты переданы в запрос: 3 scratchpad + 9 task + 4 invariants
+    tools = getattr(llm.seen[0], "tools", None)
+    assert tools is not None and len(tools) == 16
+    # во втором запросе инвариант инжектируется в системные сообщения
+    second = getattr(llm.seen[1], "messages", [])
+    system_blocks = "\n".join(m.content or "" for m in second if m.role is Role.SYSTEM)
+    assert INVARIANTS_HEADER in system_blocks
+    assert "- не удалять лог" in system_blocks
+    # удаление
+    agent2, _ = make_round_agent(
+        [
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        _tcd(index=0, id="i3", name="invariant_add", args='{"text": "x"}')
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        _tcd(index=0, id="i4", name="invariant_remove", args='{"index": 1}')
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")],
+        ]
+    )
+    asyncio.run(agent2.ask("очисти"))
+    assert agent2.memory.invariants == []
+
+
+def test_invariant_remove_out_of_range_returns_error() -> None:
+    agent, _ = make_round_agent(
+        [
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        _tcd(index=0, id="i5", name="invariant_remove", args='{"index": 9}')
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")],
+        ]
+    )
+    asyncio.run(agent.ask("удали"))
+    tool_msg = agent.memory.history[2]
+    assert tool_msg.role is Role.TOOL
+    assert "ограничения с номером" in (tool_msg.content or "")
 
 
 def test_unknown_tool_returns_error_to_model() -> None:
@@ -477,6 +582,51 @@ def test_web_stream_tool_events_and_scratchpad(tmp_path) -> None:
             done_msg = next(e["message"] for e in events if e["event"] == "done")
             assert done_msg["content"] == "готово"
             assert done_msg["id"] == "m3"
+
+    asyncio.run(run())
+
+
+def test_web_stream_invariants_event(tmp_path) -> None:
+    """SSE-ход с tool-раундом: появление инварианта шлёт событие 'invariants'."""
+    llm = RoundLLM(
+        [
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        _tcd(
+                            index=0,
+                            id="i1",
+                            name="invariant_add",
+                            args='{"text": "не удалять лог"}',
+                        )
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [ChatChunk(content="готово"), ChatChunk(finish_reason="stop")],
+        ]
+    )
+    _state, app = build_state(tmp_path, llm=llm)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"  # type: ignore[arg-type]
+        ) as client:
+            agent = (await client.post("/api/agents", json={"name": "t"})).json()
+            resp = await client.post(
+                f"/api/agents/{agent['id']}/messages", json={"content": "делай"}
+            )
+            events = []
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if line.startswith("data:"):
+                    events.append(json.loads(line[len("data:") :].strip()))
+            names = [e["event"] for e in events]
+            assert "invariants" in names
+            inv = next(e for e in events if e["event"] == "invariants")
+            assert inv["invariants"] == ["не удалять лог"]
+            dto = (await client.get("/api/agents")).json()[0]
+            assert dto["invariants"] == ["не удалять лог"]
 
     asyncio.run(run())
 

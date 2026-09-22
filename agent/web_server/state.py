@@ -18,7 +18,8 @@ from agent.core.task import TaskPhase, TaskState
 from agent.llm.client import LLMClient
 from agent.memory.longterm import ProjectLongTermMemory
 from agent.memory.persistence import ProfileInfo, ProjectInfo, SessionStore
-from agent.tools.registry import ToolRegistry
+from agent.tools.delegate import delegate_tools
+from agent.tools.registry import Tool, ToolRegistry
 from agent.web_server.dto import (
     AgentDTO,
     AgentSettingsDTO,
@@ -130,6 +131,7 @@ class WebState:
         self._records[agent_id] = record
         if self.active_agent_id is None:
             self.active_agent_id = agent_id
+        record.agent.register_tools(self._delegate_tools(record))
         self.persist(record)
         return record
 
@@ -185,6 +187,7 @@ class WebState:
         self._apply_profile_content(record)
         self._records[agent_id] = record
         self.active_agent_id = agent_id
+        record.agent.register_tools(self._delegate_tools(record))
         self.persist(record)
         return record
 
@@ -200,6 +203,7 @@ class WebState:
         record.agent.set_project(project_id, ProjectLongTermMemory(self.store, project_id))
         record.agent.apply_session(data)
         self._apply_profile_content(record)
+        record.agent.register_tools(self._delegate_tools(record))
         record.session_id = session_id
         record.project_id = project_id
         self.set_active(agent_id)
@@ -217,6 +221,10 @@ class WebState:
             record.agent.set_active_profile("", "")
             return
         record.agent.set_active_profile(profile_id, profile.content)
+
+    def _delegate_tools(self, record: AgentRecord) -> list[Tool]:
+        """Инструменты делегирования для агента, привязанные к его проекту (live)."""
+        return delegate_tools(record.agent, self.store, self.llm, self.config)
 
     # --- персист (аналог TUI _persist_tab/_tick) ---
 
@@ -245,6 +253,7 @@ class WebState:
             len(memory.branches),
             tuple(sorted(memory.facts.items())),
             memory.scratchpad,
+            tuple(memory.invariants),
             json.dumps(agent.memory.task.state.to_dict(), sort_keys=True, ensure_ascii=False),
             agent.active_profile_id,
         )
@@ -261,6 +270,7 @@ class WebState:
             summary=agent.memory.summary,
             facts=agent.memory.facts,
             scratchpad=agent.memory.scratchpad,
+            invariants=agent.memory.invariants,
             active_branch=agent.memory.active_branch,
             branches=agent.memory.branches,
             project_id=agent.project_id,
@@ -368,6 +378,7 @@ class WebState:
             memory_suggestion=agent.pending_memory_suggestion,
             active_profile_id=agent.active_profile_id,
             task=WebState.task_dto(agent.memory.task.state),
+            invariants=agent.memory.invariants,
         )
 
     @staticmethod
@@ -379,9 +390,11 @@ class WebState:
             phase=state.phase.value,
             step=state.step,
             steps=list(state.steps),
+            validation_steps=list(state.validation_steps),
             expected_action=state.expected_action,
             description=state.description,
             paused=state.paused,
+            plan_confirmed=state.plan_confirmed,
         )
 
     def config_dto(self) -> ConfigDTO:
@@ -611,12 +624,15 @@ class WebState:
         operation = body.operation
         if operation is TaskCommandOperation.START:
             machine.start(
-                body.description, body.steps, expected_action=body.expected_action
+                body.description,
+                body.steps,
+                validation_steps=body.validation_steps,
+                expected_action=body.expected_action,
             )
         elif operation is TaskCommandOperation.SET_PHASE:
             machine.transition(TaskPhase(body.phase), expected_action=body.expected_action)
         elif operation is TaskCommandOperation.ADVANCE:
-            machine.advance_step(body.expected_action)
+            machine.advance_step(body.expected_action, done=body.done)
         elif operation is TaskCommandOperation.PAUSE:
             machine.pause()
         elif operation is TaskCommandOperation.RESUME:
@@ -627,5 +643,16 @@ class WebState:
             if not body.expected_action:
                 raise ValueError("expected_action не может быть пустым")
             machine.set_expected_action(body.expected_action)
+        elif operation is TaskCommandOperation.CONFIRM_PLAN:
+            if machine.state.phase is not TaskPhase.PLANNING:
+                raise ValueError("подтвердить план можно только из фазы планирования")
+            if not machine.state.steps:
+                raise ValueError("план пуст — сначала составь план")
+            machine.set_plan_confirmed(True)
+            machine.transition(
+                TaskPhase.EXECUTION,
+                expected_action=body.expected_action or None,
+                note="план подтверждён пользователем",
+            )
         self.persist(record)
         return record

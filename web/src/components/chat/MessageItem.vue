@@ -65,13 +65,11 @@ function toggleReasoning(): void {
   reasoningExpanded.value = !reasoningExpanded.value;
 }
 
-/** результат инструмента: «🔧 имя: вывод» (обрезан, полный — в title) */
+/** результат инструмента: «🔧 имя: вывод» — полный текст переносится по строкам */
 const toolLine = computed(() => {
   if (!isTool.value) return null;
   const name = props.message.tool_name ?? "инструмент";
-  const output = props.message.content;
-  const preview = output.length > 120 ? output.slice(0, 120) + "…" : output;
-  return { name, preview, full: output };
+  return { name, full: props.message.content };
 });
 
 /** имена инструментов, вызванных ассистентом (для бейджа) */
@@ -127,8 +125,8 @@ const tokensLine = computed(() => {
         <div class="msg-body" v-html="userEscaped" />
       </template>
       <template v-else-if="isTool">
-        <div class="msg-note msg-tool" :title="toolLine?.full">
-          🔧 {{ toolLine?.name }}: {{ toolLine?.preview }}
+        <div class="msg-note msg-tool">
+          🔧 {{ toolLine?.name }}: {{ toolLine?.full }}
         </div>
       </template>
       <div v-else class="msg-note">{{ message.content }}</div>
@@ -194,9 +192,9 @@ const tokensLine = computed(() => {
 .msg-tool {
   opacity: 0.75;
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .msg-reasoning {
   margin-bottom: 6px;

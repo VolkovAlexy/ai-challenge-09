@@ -87,6 +87,10 @@
    - `error {kind: "http"|"network", detail}` — `LLMError` со `status`
      4xx → `kind:"http"`, прочее (сетевое, таймаут) → `kind:"network"`;
      detail — строка исключения;
+   - `subagent_* {profile[, content]}` — активность делегирования: насос
+     дренит `agent.subagent_events` (`started` → `subagent_started`,
+     `delta` → `subagent_delta`, `done` → `subagent_done`) и эмитит их между
+     `tool_message`-событиями, не трогая основной `delta`-счёт.
 5. между агентами стримы независимы: каждый `POST messages` живёт в своей
    задаче; `streaming` в `AgentDTO` — `agent.is_streaming`.
 
@@ -139,6 +143,17 @@
   `DELETE` несуществующего → 404; повторный `POST messages` во время стрима → 409;
 - SSE: дельты склеиваются в `done.message.content == текст ответа мока`;
   `user_message` приходит первым; `cancelled` после `POST cancel`;
+- делегирование: `delegate` создаёт эфемерного субагента (системный промпт =
+  содержимое профиля), возвращает его ответ как `tool`-сообщение; субагент
+  создаётся с `tools=None` (рекурсия невозможна); SSE-поток эмитит
+  `subagent_started` → `subagent_delta` → `subagent_done`;
+- задача (автомат): план из двух списков `steps` (выполнение) и
+  `validation_steps` (проверка); `confirm_plan` переводит `planning → execution`
+  (`plan_confirmed: true`); подтверждение вне `planning` или при пустом плане →
+  `400`; переход `planning → execution` без подтверждения → `409`; возврат
+  `validation → planning`; `task_advance_step(done=true)` явно завершает шаг и
+  сбрасывает `step` на 1 при смене группы списка; `task_update_plan` заменяет
+  план и сбрасывает `plan_confirmed`;
 - `DELETE /api/agents/{id}/messages` → история пуста;
 - восстановление: создать агента, снапшот, пересоздать `state`, `GET /api/agents`
   возвращает агента с историей.

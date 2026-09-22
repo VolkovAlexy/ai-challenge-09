@@ -82,6 +82,7 @@ _MIGRATIONS = [
     "ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN active_profile_id TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE sessions ADD COLUMN task TEXT NOT NULL DEFAULT '{}'",
+    "ALTER TABLE sessions ADD COLUMN invariants TEXT NOT NULL DEFAULT '[]'",
     # создаётся ПОСЛЕ добавления column project_id — на старой БД индекс
     # не может существовать до наращивания схемы
     "CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions (project_id)",
@@ -165,6 +166,7 @@ class SessionStore:
         compacted_upto: int = 0,
         facts: dict[str, str] | None = None,
         scratchpad: str = "",
+        invariants: list[str] | None = None,
         active_branch: str = DEFAULT_BRANCH,
         branches: dict[str, BranchState] | None = None,
         project_id: str = "",
@@ -195,9 +197,9 @@ class SessionStore:
                 """
                     INSERT INTO sessions
                         (id, name, title, system_prompt, settings_json, summary, compacted_upto,
-                         facts, scratchpad, active_branch, branches_json, created_at, updated_at,
-                         project_id, active_profile_id, task)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         facts, scratchpad, invariants, active_branch, branches_json, created_at,
+                         updated_at, project_id, active_profile_id, task)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT (id) DO UPDATE SET
                         name = excluded.name,
                         system_prompt = excluded.system_prompt,
@@ -206,6 +208,7 @@ class SessionStore:
                         compacted_upto = excluded.compacted_upto,
                         facts = excluded.facts,
                         scratchpad = excluded.scratchpad,
+                        invariants = excluded.invariants,
                         active_branch = excluded.active_branch,
                         branches_json = excluded.branches_json,
                         updated_at = excluded.updated_at,
@@ -223,6 +226,7 @@ class SessionStore:
                     compacted_upto,
                     json.dumps(facts or {}, ensure_ascii=False),
                     scratchpad,
+                    json.dumps(invariants or [], ensure_ascii=False),
                     active_branch,
                     json.dumps(inactive, ensure_ascii=False),
                     now,
@@ -306,7 +310,7 @@ class SessionStore:
                 """
                 SELECT name, system_prompt, settings_json, summary, compacted_upto,
                        facts, active_branch, branches_json, scratchpad, active_profile_id,
-                       task
+                       task, invariants
                 FROM sessions WHERE id = ?
                 """,
                 (session_id,),
@@ -339,6 +343,7 @@ class SessionStore:
             compacted_upto=int(row[4] or 0),
             facts={str(k): str(v) for k, v in json.loads(row[5] or "{}").items()},
             scratchpad=row[8] or "",
+            invariants=[str(x) for x in json.loads(row[11] or "[]")],
             active_branch=active,
             branches=branches,
             history=history,
@@ -521,6 +526,7 @@ class SessionStore:
             history=data.history,
             facts=data.facts,
             scratchpad=data.scratchpad,
+            invariants=data.invariants,
             task=data.task,
             active_branch=data.active_branch,
             branches=data.branches,

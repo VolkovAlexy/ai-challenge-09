@@ -38,7 +38,12 @@ _START_PARAMS: dict[str, Any] = {
         "steps": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "План задачи: упорядоченные шаги (не пустой)",
+            "description": "План задачи: упорядоченные шаги ВЫПОЛНЕНИЯ (не пустой)",
+        },
+        "validation_steps": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "План проверки: упорядоченные шаги ПРОВЕРКИ результата (необязательно)",
         },
         "expected_action": {
             "type": "string",
@@ -69,7 +74,14 @@ _STEP_PARAMS: dict[str, Any] = {
         "expected_action": {
             "type": "string",
             "description": "Что сделать на следующем шаге",
-        }
+        },
+        "done": {
+            "type": "boolean",
+            "description": (
+                "true — текущий шаг выполнен и можно перейти дальше; "
+                "false — только указать ожидаемое действие"
+            ),
+        },
     },
 }
 
@@ -82,6 +94,27 @@ _ACTION_PARAMS: dict[str, Any] = {
         }
     },
     "required": ["expected_action"],
+}
+
+_UPDATE_PLAN_PARAMS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "steps": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Обновлённый план задачи: упорядоченные шаги ВЫПОЛНЕНИЯ (не пустой)",
+        },
+        "validation_steps": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Обновлённый план проверки: упорядоченные шаги ПРОВЕРКИ (необязательно)",
+        },
+        "description": {
+            "type": "string",
+            "description": "Обновлённое описание задачи (необязательно)",
+        },
+    },
+    "required": ["steps"],
 }
 
 
@@ -140,8 +173,16 @@ class TaskStartTool:
         if not description:
             return ToolResult(output="Ошибка: description не может быть пустым", is_error=True)
         steps = [str(s) for s in arguments.get("steps", []) if str(s).strip()]
+        validation_steps = [
+            str(s) for s in arguments.get("validation_steps", []) if str(s).strip()
+        ]
         expected_action = str(arguments.get("expected_action", "")).strip()
-        self._memory.task.start(description, steps, expected_action=expected_action)
+        self._memory.task.start(
+            description,
+            steps,
+            validation_steps=validation_steps,
+            expected_action=expected_action,
+        )
         return ToolResult(output=_note(self._memory.task.describe()))
 
 
@@ -189,7 +230,11 @@ class TaskAdvanceStepTool:
 
     async def execute(self, arguments: dict[str, Any]) -> ToolResult:
         expected_action = str(arguments.get("expected_action", "")).strip()
-        self._memory.task.advance_step(expected_action)
+        done = bool(arguments.get("done", True))
+        try:
+            self._memory.task.advance_step(expected_action, done=done)
+        except InvalidTaskTransition as exc:
+            return ToolResult(output=f"Ошибка: {exc}", is_error=True)
         return ToolResult(output=_note(self._memory.task.describe()))
 
 
@@ -259,6 +304,36 @@ class TaskResetTool:
         return ToolResult(output="Задача сброшена.")
 
 
+class TaskUpdatePlanTool:
+    """task_update_plan: заменяет план задачи (шаги) и описание, снимает подтверждение."""
+
+    name = "task_update_plan"
+    description = (
+        "Заменить план задачи (список шагов) и, при необходимости, описание. "
+        "Используется в фазе планирования, чтобы составить или скорректировать план "
+        "после возврата из проверки. Подтверждение плана снимается — его нужно дать заново."
+    )
+
+    def __init__(self, memory: InMemorySession) -> None:
+        self._memory = memory
+        self.parameters = _UPDATE_PLAN_PARAMS
+
+    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+        steps = [str(s) for s in arguments.get("steps", []) if str(s).strip()]
+        if not steps:
+            return ToolResult(output="Ошибка: steps не может быть пустым", is_error=True)
+        validation_steps = (
+            [str(s) for s in arguments.get("validation_steps", []) if str(s).strip()]
+            if "validation_steps" in arguments
+            else None
+        )
+        description = arguments.get("description")
+        self._memory.task.set_plan(
+            steps, description=description, validation_steps=validation_steps
+        )
+        return ToolResult(output=_note(self._memory.task.describe()))
+
+
 def task_tools(memory: InMemorySession) -> list[Tool]:
     """Создаёт инструменты состояния задачи, привязанные к сессии агента."""
     tools: list[Tool] = [
@@ -270,5 +345,6 @@ def task_tools(memory: InMemorySession) -> list[Tool]:
         TaskPauseTool(memory),
         TaskResumeTool(memory),
         TaskResetTool(memory),
+        TaskUpdatePlanTool(memory),
     ]
     return tools

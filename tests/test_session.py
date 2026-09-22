@@ -96,6 +96,27 @@ def test_save_load_task_roundtrip(tmp_path: Path) -> None:
     assert data.task.steps == ["подготовить", "реализовать"]
 
 
+def test_save_load_invariants_roundtrip(tmp_path: Path) -> None:
+    path = save_session(
+        tmp_path / "inv.jsonl",
+        settings=AgentSettings.from_config(make_config()),
+        system_prompt="SP",
+        name="n",
+        history=[Message(role=Role.USER, content="x")],
+        invariants=["не удалять лог", "императив"],
+    )
+    data = load_session(path)
+    assert data.invariants == ["не удалять лог", "императив"]
+
+
+def test_in_memory_session_clear_resets_invariants() -> None:
+    session = InMemorySession()
+    session.scratchpad = "заметка"
+    session.invariants = ["a", "b"]
+    session.clear()
+    assert session.invariants == []
+
+
 def test_load_missing_file(tmp_path: Path) -> None:
     with pytest.raises(SessionError, match="не найден"):
         load_session(tmp_path / "nope.jsonl")

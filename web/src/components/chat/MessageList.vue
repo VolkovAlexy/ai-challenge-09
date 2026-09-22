@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { NButton } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
+import { useAgentsStore, type SubagentBlock as SubagentBlockT } from "@/stores/agents";
+import type { MessageDTO } from "@/api/types";
 import MessageItem from "./MessageItem.vue";
+import SubagentBlock from "./SubagentBlock.vue";
+
+type TimelineItem =
+  | { kind: "msg"; msg: MessageDTO; idx: number }
+  | { kind: "sub"; si: number; block: SubagentBlockT };
 
 const store = useAgentsStore();
 
@@ -12,11 +18,34 @@ const history = computed(() => agent.value?.history ?? []);
 const container = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
 
+// --- хронологичная лента: сообщения и субагент-блоки в порядке появления (§7.2) ---
+const timeline = computed<TimelineItem[]>(() => {
+  const hist = history.value;
+  const subs = agent.value?.subagents ?? [];
+  const items: TimelineItem[] = [];
+  let cursor = 0;
+  for (let i = 0; i < hist.length; i++) {
+    items.push({ kind: "msg", msg: hist[i], idx: i });
+    while (cursor < subs.length && subs[cursor].anchor <= i + 1) {
+      items.push({ kind: "sub", si: cursor, block: subs[cursor] });
+      cursor++;
+    }
+  }
+  // блоки, чей якорь ещё за пределами выгруженной истории — в конец
+  while (cursor < subs.length) {
+    items.push({ kind: "sub", si: cursor, block: subs[cursor] });
+    cursor++;
+  }
+  return items;
+});
+
 // --- автоскролл вниз только когда пользователь у нижнего края (§7.3) ---
 // Сигнатура последнего сообщения меняется на каждый апдейт стрима/размышлений.
 const listSignature = computed(() => {
   const last = history.value[history.value.length - 1];
-  return `${history.value.length}:${last?.content.length ?? 0}:${last?.reasoning?.length ?? 0}`;
+  const subs = agent.value?.subagents ?? [];
+  const subSig = subs.reduce((acc, s) => acc + s.text.length, 0) + subs.length;
+  return `${history.value.length}:${last?.content.length ?? 0}:${last?.reasoning?.length ?? 0}:${subSig}`;
 });
 
 watch(listSignature, () => {
@@ -83,18 +112,21 @@ defineExpose({ scrollDown });
     <div v-if="!agent || history.length === 0" class="msglist-empty">
       История пуста — напишите что-нибудь или введите /help
     </div>
-    <template v-for="(m, i) in history" :key="m.id + i">
-      <MessageItem
-        :message="m"
-        :live="i === history.length - 1 && agent?.streaming === true"
-        @action="(action) => onAction(i, action)"
-      />
-      <div
-        v-if="i === history.length - 1 && agent?.compactionNote"
-        class="msg-note compaction"
-      >
-        {{ agent.compactionNote }}
-      </div>
+    <template v-for="item in timeline" :key="item.kind === 'msg' ? `m-${item.msg.id}-${item.idx}` : `s-${item.block.profile}-${item.si}`">
+      <template v-if="item.kind === 'msg'">
+        <MessageItem
+          :message="item.msg"
+          :live="item.idx === history.length - 1 && agent?.streaming === true"
+          @action="(action) => onAction(item.idx, action)"
+        />
+        <div
+          v-if="item.idx === history.length - 1 && agent?.compactionNote"
+          class="msg-note compaction"
+        >
+          {{ agent.compactionNote }}
+        </div>
+      </template>
+      <SubagentBlock v-else :block="item.block" />
     </template>
     <div v-if="agent?.compacting" class="loader">сжимаю контекст…</div>
     <div v-else-if="agent?.streaming && history.at(-1)?.role !== 'assistant'" class="loader">

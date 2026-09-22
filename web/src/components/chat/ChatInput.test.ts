@@ -19,16 +19,16 @@ function mountInput(streaming = false) {
   return mount(ChatInput, {
     global: {
       stubs: {
-        NButton: {
+        Button: {
           template: '<button :class="type === \'error\' ? \'btn-stop\' : \'btn-send\'"><slot/></button>',
           props: ["type", "disabled", "size"],
         },
-        NInput: {
+        Input: {
           template: '<div><textarea :value="value" @keydown="$emit(\'keydown\', $event)" @input="$emit(\'update:value\', $event.target.value)"/></div>',
           props: ["value", "type", "placeholder", "autosize", "disabled"],
           emits: ["update:value", "keydown"],
         },
-        NSelect: {
+        Select: {
           template: '<div class="n-select"><select :value="value"><option v-for="o in options" :value="o.value" :key="o.value">{{ o.label }}</option></select></div>',
           props: ["value", "options", "size", "placeholder", "style"],
           emits: ["update:value"],

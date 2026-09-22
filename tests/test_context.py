@@ -1,8 +1,14 @@
 """ContextBuilder: сборка массива messages."""
 
-from agent.core.context import FACTS_HEADER, TASK_HEADER, ContextBuilder, apply_sliding_window
+from agent.core.context import (
+    FACTS_HEADER,
+    INVARIANTS_HEADER,
+    TASK_HEADER,
+    ContextBuilder,
+    apply_sliding_window,
+)
 from agent.core.message import FunctionCall, Message, Role, ToolCall
-from agent.core.task import TaskState, TaskStateMachine
+from agent.core.task import PHASE_PROTOCOL, TaskState, TaskStateMachine
 
 
 def test_apply_sliding_window() -> None:
@@ -42,19 +48,41 @@ def test_active_task_projected_into_context() -> None:
     builder = ContextBuilder()
     machine = TaskStateMachine()
     machine.start("написать модуль", ["сделать", "проверить"])
+    machine.set_plan_confirmed(True)
     machine.to_execution("протестировать")
     messages = builder.build_messages("SP", [], task=machine.state)
     roles = [m.role for m in messages]
-    assert roles == [Role.SYSTEM, Role.SYSTEM]
+    assert roles == [Role.SYSTEM, Role.SYSTEM, Role.SYSTEM]
     assert TASK_HEADER in messages[1].content
     assert "Этап: выполнение" in messages[1].content
     assert "Ожидаемое действие: протестировать" in messages[1].content
     assert "Пауза: нет" in messages[1].content
+    assert PHASE_PROTOCOL in messages[2].content
 
 
 def test_idle_task_not_projected() -> None:
     builder = ContextBuilder()
     messages = builder.build_messages("SP", [], task=TaskState())
+    assert [m.role for m in messages] == [Role.SYSTEM]
+
+
+def test_invariants_block_in_projection() -> None:
+    builder = ContextBuilder()
+    messages = builder.build_messages(
+        "SP", [], invariants=["не удалять лог", "императив"]
+    )
+    assert [m.role for m in messages] == [Role.SYSTEM, Role.SYSTEM]
+    assert messages[0].content == "SP"
+    assert INVARIANTS_HEADER in messages[1].content
+    assert "- не удалять лог" in messages[1].content
+    assert "- императив" in messages[1].content
+
+
+def test_empty_invariants_not_projected() -> None:
+    builder = ContextBuilder()
+    messages = builder.build_messages("SP", [], invariants=None)
+    assert [m.role for m in messages] == [Role.SYSTEM]
+    messages = builder.build_messages("SP", [], invariants=[])
     assert [m.role for m in messages] == [Role.SYSTEM]
 
 

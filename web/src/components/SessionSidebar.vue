@@ -183,31 +183,38 @@ function truncateModel(model: string | undefined): string {
           class="project-card"
           :class="{ active: project.id === projectsStore.activeProjectId }"
         >
-          <!-- заголовок проекта -->
+          <!-- заголовок проекта: название — первая строка, счётчик и новый чат — вторая -->
           <div class="project-head" @click="onProjectClick(project)">
-            <span class="project-caret" :class="{ open: projectsStore.isExpanded(project.id) }">▸</span>
-            <template v-if="renameProjectId === project.id">
-              <input
-                v-model="renameDraft"
-                class="project-rename"
-                autofocus
-                @keyup.enter="confirmProjectRename(project)"
-                @keyup.esc="cancelProjectRename"
-                @blur="confirmProjectRename(project)"
-              />
-            </template>
-            <template v-else>
-              <span class="project-name">{{ project.name }}</span>
+            <div class="project-head-row">
+              <span class="project-caret" :class="{ open: projectsStore.isExpanded(project.id) }">▸</span>
+              <template v-if="renameProjectId === project.id">
+                <input
+                  v-model="renameDraft"
+                  class="project-rename"
+                  autofocus
+                  @keyup.enter="confirmProjectRename(project)"
+                  @keyup.esc="cancelProjectRename"
+                  @blur="confirmProjectRename(project)"
+                />
+              </template>
+              <template v-else>
+                <span class="project-name">{{ project.name }}</span>
+              </template>
+              <n-dropdown
+                :options="projectOptions(project)"
+                trigger="click"
+                placement="right-start"
+                @select="(key: string) => onProjectAction(key, project)"
+              >
+                <n-button class="project-menu" size="tiny" quaternary @click.stop>⋮</n-button>
+              </n-dropdown>
+            </div>
+            <div v-if="renameProjectId !== project.id" class="project-head-meta" @click.stop>
               <span class="project-meta">{{ (byProject[project.id] ?? []).length }} чатов</span>
-            </template>
-            <n-dropdown
-              :options="projectOptions(project)"
-              trigger="click"
-              placement="right-start"
-              @select="(key: string) => onProjectAction(key, project)"
-            >
-              <n-button class="project-menu" size="tiny" quaternary @click.stop>⋮</n-button>
-            </n-dropdown>
+              <n-button class="project-new-chat" size="tiny" quaternary @click="emit('newChat', project.id)">
+                + Новый чат
+              </n-button>
+            </div>
           </div>
 
           <!-- тело проекта: сессии -->
@@ -249,9 +256,6 @@ function truncateModel(model: string | undefined): string {
                 <n-button class="card-menu" size="tiny" quaternary @click.stop>⋮</n-button>
               </n-dropdown>
             </div>
-            <n-button class="project-new-chat" size="tiny" quaternary @click="emit('newChat', project.id)">
-              + Новый чат
-            </n-button>
           </div>
         </div>
       </div>
@@ -302,7 +306,7 @@ function truncateModel(model: string | undefined): string {
 
 /* --- карточка проекта --- */
 .project-card {
-  margin: 2px 0;
+  margin: 10px 0;
   border: 1px solid #242833;
   border-radius: 8px;
   background: #1a1d25;
@@ -314,21 +318,27 @@ function truncateModel(model: string | undefined): string {
 }
 
 .project-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
   cursor: pointer;
   transition: background 0.15s;
+  padding: 10px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .project-head:hover {
   background: #1c212c;
 }
 
+.project-head-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .project-caret {
   color: #777;
-  font-size: 11px;
+  font-size: 12px;
   transition: transform 0.15s;
   flex-shrink: 0;
 }
@@ -338,7 +348,8 @@ function truncateModel(model: string | undefined): string {
 }
 
 .project-name {
-  font-size: 13px;
+  font-size: 15px;
+  font-weight: 600;
   color: #c8ccd4;
   flex: 1;
   min-width: 0;
@@ -348,9 +359,16 @@ function truncateModel(model: string | undefined): string {
 }
 
 .project-meta {
-  font-size: 11px;
+  font-size: 12px;
   color: #555;
   flex-shrink: 0;
+}
+
+.project-head-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
 }
 
 .project-rename {
@@ -360,7 +378,7 @@ function truncateModel(model: string | undefined): string {
   border: 1px solid #7aa2f7;
   border-radius: 6px;
   color: #c8ccd4;
-  font-size: 13px;
+  font-size: 15px;
   padding: 4px 6px;
   outline: none;
 }
@@ -453,8 +471,7 @@ function truncateModel(model: string | undefined): string {
 }
 
 .project-new-chat {
-  margin: 6px 0 0 6px;
-  width: calc(100% - 12px);
-  justify-content: flex-start;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 </style>

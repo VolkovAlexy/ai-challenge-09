@@ -273,9 +273,11 @@ describe("agents store", () => {
     phase: "execution",
     step: 2,
     steps: ["подготовить", "реализовать", "проверить"],
+    validation_steps: [],
     expected_action: "протестировать модуль",
     description: "написать модуль",
     paused: false,
+    plan_confirmed: true,
   };
 
   it("stateFromDTO мапит состояние задачи при создании агента", async () => {

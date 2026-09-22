@@ -41,6 +41,7 @@ class SessionData:
     compacted_upto: int = 0
     facts: dict[str, str] = field(default_factory=dict)
     scratchpad: str = ""
+    invariants: list[str] = field(default_factory=list)  # ограничения (инварианты) сессии
     task: TaskState | None = None
     active_branch: str = DEFAULT_BRANCH
     branches: dict[str, BranchState] = field(default_factory=dict)
@@ -67,6 +68,7 @@ class InMemorySession:
         self.compacted_upto: int = 0
         self.facts: dict[str, str] = {}
         self.scratchpad: str = ""  # рабочая память задачи (уровень сессии)
+        self.invariants: list[str] = []  # ограничения (уровень сессии, не ветки)
         self.task: TaskStateMachine = TaskStateMachine()  # автомат состояния задачи
         self._branches: dict[str, BranchState] = {}
         self._active: str = DEFAULT_BRANCH
@@ -110,6 +112,7 @@ class InMemorySession:
         self.compacted_upto = compacted_upto
         self.facts = {}
         self.scratchpad = ""
+        self.invariants = []
         self.task = TaskStateMachine()
 
     def __len__(self) -> int:
@@ -199,6 +202,7 @@ def save_session(
     history: list[Message],
     facts: dict[str, str] | None = None,
     scratchpad: str = "",
+    invariants: list[str] | None = None,
     task: TaskState | None = None,
     active_branch: str = DEFAULT_BRANCH,
     branches: dict[str, BranchState] | None = None,
@@ -234,6 +238,7 @@ def save_session(
         "compacted_upto": compacted_upto,
         "facts": facts or {},
         "scratchpad": scratchpad,
+        "invariants": invariants or [],
         "task": task.to_dict() if task is not None and task.is_active else None,
         "active_branch": active_branch,
         "branches": branch_meta,
@@ -301,6 +306,7 @@ def load_session(path: Path | str) -> SessionData:
             compacted_upto=meta.get("compacted_upto", 0),
             facts={str(k): str(v) for k, v in meta.get("facts", {}).items()},
             scratchpad=str(meta.get("scratchpad", "")),
+            invariants=[str(x) for x in meta.get("invariants", [])],
             task=TaskState.from_dict(meta.get("task", {})),
             active_branch=active,
             branches=branches,

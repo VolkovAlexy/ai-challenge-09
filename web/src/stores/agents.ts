@@ -8,11 +8,28 @@ import { api } from "@/api/client";
 
 export type AgentId = string;
 
+// префикс внутреннего «продолжай» автопилота (зеркало AUTOPILOT_MARKER на бэкенде):
+// такие сообщения пользователь не вводил, скрываем их из чата
+const AUTOPILOT_MARKER = "[АВТОПРОДОЛЖЕНИЕ]";
+
+function isAutopilotMessage(m: MessageDTO): boolean {
+  return m.role === "user" && m.content.startsWith(AUTOPILOT_MARKER);
+}
+
 export interface AgentSettingsState {
   temperature: number;
   top_p: number;
   max_tokens: number;
   stop: string[];
+}
+
+/** Живой блок работы субагента (delegate): копится до subagent_done. */
+export interface SubagentBlock {
+  profile: string;
+  text: string;
+  done: boolean;
+  /** Позиция в ленте сообщений: длина history на момент старта — для хронологичного порядка. */
+  anchor: number;
 }
 
 /** Клиентское состояние агента — аналог Python-класса Agent. */
@@ -39,8 +56,12 @@ export interface AgentState {
   activeProfileId: string;
   /** состояние задачи (конечный автомат); null — задача не задана */
   task: TaskStateDTO | null;
+  /** ограничения (инварианты) сессии */
+  invariants: string[];
   /** живой стрим размышлений thinking-модели (копится до done/tool_message) */
   streamingReasoning: string;
+  /** блоки работы субагентов текущего хода (delegate) */
+  subagents: SubagentBlock[];
   /** ID загруженной сессии (если агент восстановлен из сессии) */
   sessionId: string | null;
   tokensIn: number;
@@ -70,7 +91,9 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     memorySuggestion: dto.memory_suggestion ?? null,
     activeProfileId: dto.active_profile_id ?? "",
     task: dto.task ?? null,
+    invariants: dto.invariants ?? [],
     streamingReasoning: "",
+    subagents: [],
     sessionId: null,
     tokensIn: 0,
     tokensOut: 0,
@@ -133,6 +156,7 @@ export const useAgentsStore = defineStore("agents", () => {
     if (dto.memory_suggestion !== undefined) state.memorySuggestion = dto.memory_suggestion;
     if (dto.active_profile_id !== undefined) state.activeProfileId = dto.active_profile_id;
     if (dto.task !== undefined) state.task = dto.task;
+    if (dto.invariants !== undefined) state.invariants = dto.invariants;
     if (existing === undefined) {
       agents.value[dto.id] = state;
       order.value.push(dto.id);
@@ -158,7 +182,7 @@ export const useAgentsStore = defineStore("agents", () => {
   async function loadHistory(id: AgentId): Promise<void> {
     const state = agents.value[id];
     if (state === undefined) return;
-    state.history = await api.getMessages(id);
+    state.history = (await api.getMessages(id)).filter((m) => !isAutopilotMessage(m));
   }
 
   async function createAgent(name?: string, projectId?: string): Promise<AgentState> {
@@ -235,6 +259,7 @@ export const useAgentsStore = defineStore("agents", () => {
     state.cancelled = false;
     state.compactionNote = null;
     state.streamingReasoning = "";
+    state.subagents = [];
     aborts.set(id, new AbortController());
     let streamText = "";
     try {
@@ -367,16 +392,21 @@ export const useAgentsStore = defineStore("agents", () => {
     upsert(await api.taskCommand(id, body));
   }
 
-  async function startTask(id: AgentId, description: string, steps: string[], expectedAction?: string): Promise<void> {
-    await runTaskCommand(id, { operation: "start", description, steps, expected_action: expectedAction });
+  async function startTask(id: AgentId, description: string, steps: string[], expectedAction?: string, validationSteps?: string[]): Promise<void> {
+    await runTaskCommand(id, { operation: "start", description, steps, validation_steps: validationSteps, expected_action: expectedAction });
   }
 
   async function setTaskPhase(id: AgentId, phase: TaskPhase, expectedAction?: string): Promise<void> {
     await runTaskCommand(id, { operation: "set_phase", phase, expected_action: expectedAction });
   }
 
-  async function advanceTaskStep(id: AgentId, expectedAction?: string): Promise<void> {
-    await runTaskCommand(id, { operation: "advance", expected_action: expectedAction });
+  /** Пользователь подтвердил план — переход «планирование» → «выполнение». */
+  async function confirmPlan(id: AgentId): Promise<void> {
+    await runTaskCommand(id, { operation: "confirm_plan" });
+  }
+
+  async function advanceTaskStep(id: AgentId, expectedAction?: string, done = true): Promise<void> {
+    await runTaskCommand(id, { operation: "advance", expected_action: expectedAction, done });
   }
 
   async function pauseTask(id: AgentId): Promise<void> {
@@ -418,6 +448,7 @@ export const useAgentsStore = defineStore("agents", () => {
     setScratchpad,
     startTask,
     setTaskPhase,
+    confirmPlan,
     advanceTaskStep,
     pauseTask,
     resumeTask,
@@ -438,7 +469,7 @@ interface ApiErrorLike {
 export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
   switch (ev.event) {
     case "user_message":
-      state.history.push(ev.message);
+      if (!isAutopilotMessage(ev.message)) state.history.push(ev.message);
       break;
     case "compaction_started":
       state.compacting = true;
@@ -465,6 +496,27 @@ export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
     case "task":
       state.task = ev.task;
       break;
+    case "invariants":
+      state.invariants = ev.invariants;
+      break;
+    case "subagent_started":
+      state.subagents.push({
+        profile: ev.profile,
+        text: "",
+        done: false,
+        anchor: state.history.length,
+      });
+      break;
+    case "subagent_delta": {
+      const block = state.subagents[state.subagents.length - 1];
+      if (block !== undefined && block.profile === ev.profile) block.text += ev.content;
+      break;
+    }
+    case "subagent_done": {
+      const block = state.subagents[state.subagents.length - 1];
+      if (block !== undefined && block.profile === ev.profile) block.done = true;
+      break;
+    }
     case "done":
       upsertDone(state, ev.message);
       break;

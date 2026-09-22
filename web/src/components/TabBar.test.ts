@@ -13,7 +13,9 @@ function seedStore(): void {
     history: [], streaming: true, compacting: false, cancelled: false, compactionNote: null,
     scratchpad: "", memorySuggestion: null, activeProfileId: "",
     task: null,
+    invariants: [],
     streamingReasoning: "",
+    subagents: [],
     sessionId: null, tokensIn: 0, tokensOut: 0, contextUsed: 0, contextWindow: 0,
   };
   store.agents["a2"] = {
@@ -23,7 +25,9 @@ function seedStore(): void {
     history: [], streaming: false, compacting: false, cancelled: false, compactionNote: null,
     scratchpad: "", memorySuggestion: null, activeProfileId: "",
     task: null,
+    invariants: [],
     streamingReasoning: "",
+    subagents: [],
     sessionId: null,
     tokensIn: 0, tokensOut: 0, contextUsed: 0, contextWindow: 0,
   };
@@ -38,24 +42,24 @@ beforeEach(() => {
 });
 
 describe("TabBar", () => {
-  it("активная вкладка помечена, модели видны", () => {
+  it("активная вкладка помечена, названия видны", () => {
     const w = mount(TabBar);
-    const tabs = w.findAll(".tab:not(.tab-new)");
+    const tabs = w.findAll(".n-tabs-tab");
     expect(tabs.length).toBe(2);
-    expect(tabs[0].classes()).toContain("active");
-    expect(tabs[1].text()).toContain("openai:gpt-4");
+    expect(tabs[0].classes()).toContain("n-tabs-tab--active");
+    expect(tabs[1].text()).toContain("chat-2");
   });
 
   it("индикатор стрима только у стримящего агента", () => {
     const w = mount(TabBar);
-    const tabs = w.findAll(".tab:not(.tab-new)");
+    const tabs = w.findAll(".n-tabs-tab");
     expect(tabs[0].find(".tab-dot").exists()).toBe(true);
     expect(tabs[1].find(".tab-dot").exists()).toBe(false);
   });
 
   it("клик по вкладке меняет activeAgentId", async () => {
     const w = mount(TabBar);
-    await w.findAll(".tab:not(.tab-new)")[1].trigger("click");
+    await w.findAll(".n-tabs-tab")[1].trigger("click");
     expect(useAgentsStore().activeAgentId).toBe("a2");
   });
 

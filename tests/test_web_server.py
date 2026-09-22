@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI
 
 from agent.config.schema import validate_config
-from agent.core.message import ChatChunk
+from agent.core.message import ChatChunk, ToolCallDelta
 from agent.memory.persistence import SessionStore
 from agent.tools.registry import ToolRegistry
 from agent.web_server.app import create_app
@@ -36,6 +36,25 @@ class MockLLM:
         for chunk in self.chunks:
             if self.delay:
                 await asyncio.sleep(self.delay)
+            yield chunk
+
+    async def close(self) -> None:
+        return None
+
+
+class SeqMockLLM:
+    """Мок LLM: отдаёт отдельную последовательность чанков на каждый вызов."""
+
+    def __init__(self, sequences: list[list[ChatChunk]]) -> None:
+        self.sequences = [list(seq) for seq in sequences]
+        self.calls = 0
+
+    async def astream(
+        self, request: object, api_base: str, api_key: str
+    ) -> AsyncIterator[ChatChunk]:
+        self.calls += 1
+        sequence = self.sequences.pop(0) if self.sequences else [ChatChunk(content="")]
+        for chunk in sequence:
             yield chunk
 
     async def close(self) -> None:
@@ -128,6 +147,7 @@ async def test_create_agent_returns_dto() -> None:
         assert body["name"] == "test"
         assert body["model"] == "p1:m1"
         assert body["streaming"] is False
+        assert body["invariants"] == []
 
 
 async def test_patch_unknown_model_400() -> None:
@@ -443,5 +463,91 @@ async def test_task_reset_returns_no_task() -> None:
         resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "reset"})
         assert resp.status_code == 200
         assert resp.json()["task"] is None
+
+
+async def test_task_confirm_plan_transitions_to_execution() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        await client.post(
+            f"/api/agents/{aid}/task",
+            json={"operation": "start", "description": "x", "steps": ["а", "б"]},
+        )
+        resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "confirm_plan"})
+        assert resp.status_code == 200
+        task = resp.json()["task"]
+        assert task["phase"] == "execution"
+        assert task["plan_confirmed"] is True
+
+
+async def test_task_confirm_plan_requires_planning() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        # нет активной задачи — из planning подтверждать нельзя
+        resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "confirm_plan"})
+        assert resp.status_code == 400
+
+
+async def test_task_confirm_plan_requires_steps() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        aid = (await create_agent(client))["id"]
+        await client.post(
+            f"/api/agents/{aid}/task", json={"operation": "start", "description": "x"}
+        )
+        resp = await client.post(f"/api/agents/{aid}/task", json={"operation": "confirm_plan"})
+        assert resp.status_code == 400
+
+
+async def test_sse_streams_subagent_events() -> None:
+    store = SessionStore(Path(":memory:"))
+    llm = SeqMockLLM(
+        [
+            [
+                ChatChunk(
+                    tool_call_deltas=[
+                        ToolCallDelta(
+                            index=0,
+                            id="c1",
+                            function_name="delegate",
+                            function_arguments='{"role":"писатель","task":"напиши"}',
+                        )
+                    ]
+                ),
+                ChatChunk(finish_reason="tool_calls"),
+            ],
+            [ChatChunk(content="Драфт готов"), ChatChunk(finish_reason="stop")],
+            [ChatChunk(content="Интегрирую."), ChatChunk(finish_reason="stop")],
+        ]
+    )
+    state = WebState(
+        config=make_config(),
+        llm=llm,  # type: ignore[arg-type]
+        tools=ToolRegistry(),
+        store=store,
+        default_system_prompt="SP",
+    )
+    world = World(state=state, app=create_app(state), store=store)
+    profile = store.create_profile("писатель", "Ты писатель")
+    store.set_project_profiles("default", [profile.id])
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        agent_id = body["id"]
+        await client.post(
+            f"/api/agents/{agent_id}/task",
+            json={"operation": "start", "description": "x", "steps": ["шаг"]},
+        )
+        await client.post(f"/api/agents/{agent_id}/task", json={"operation": "confirm_plan"})
+        async with client.stream(
+            "POST", f"/api/agents/{agent_id}/messages", json={"content": "поручи"}
+        ) as resp:
+            assert resp.status_code == 200
+            events = await collect_sse(resp)
+    names = [name for name, _ in events]
+    assert "subagent_started" in names
+    assert "subagent_done" in names
+    deltas = "".join(payload["content"] for name, payload in events if name == "subagent_delta")
+    assert deltas == "Драфт готов"
 
 

@@ -57,10 +57,12 @@ class TaskStateDTO(BaseModel):
 
     phase: str  # idle | planning | execution | validation | done
     step: int = 0  # номер текущего шага (1-based; 0 — шага нет)
-    steps: list[str] = []  # план задачи (шаги)
+    steps: list[str] = []  # план задачи: шаги ВЫПОЛНЕНИЯ
+    validation_steps: list[str] = []  # план проверки: шаги ПРОВЕРКИ результата
     expected_action: str = ""  # что сделать дальше
     description: str = ""  # описание задачи
     paused: bool = False  # пауза на любом этапе
+    plan_confirmed: bool = False  # план подтверждён пользователем (для входа в выполнение)
 
 
 class AgentDTO(BaseModel):
@@ -80,6 +82,7 @@ class AgentDTO(BaseModel):
     memory_suggestion: str | None = None  # предложение сохранить знание (ждёт решения UI)
     active_profile_id: str = ""  # активный профиль роли чата ("" — без него)
     task: TaskStateDTO | None = None  # состояние задачи (автомат); None — задачи нет
+    invariants: list[str] = []  # ограничения (инварианты) сессии
 
 
 class ProfileDTO(BaseModel):
@@ -232,6 +235,7 @@ class TaskCommandOperation(StrEnum):
     RESUME = "resume"
     RESET = "reset"
     SET_EXPECTED_ACTION = "set_expected_action"
+    CONFIRM_PLAN = "confirm_plan"
 
 
 class TaskCommandRequest(BaseModel):
@@ -240,8 +244,12 @@ class TaskCommandRequest(BaseModel):
     operation: TaskCommandOperation
     # только для start
     description: str = ""
-    # план задачи: список шагов
+    # план задачи: список шагов выполнения
     steps: list[str] | None = None
+    # план проверки: список шагов проверки (только для start / update)
+    validation_steps: list[str] | None = None
+    # для advance — отметить текущий шаг выполненным и перейти дальше
+    done: bool = True
     # для set_phase / start — целевой этап
     phase: str = ""
     # ожидаемое действие при переходе

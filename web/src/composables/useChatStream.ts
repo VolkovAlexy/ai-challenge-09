@@ -39,6 +39,7 @@ export function useChatStream(agentId: () => string | null, onEvent?: (ev: Strea
     state.cancelled = false;
     state.compactionNote = null;
     state.streamingReasoning = "";
+    state.subagents = [];
     try {
       for await (const ev of api.sendMessage(id, text)) {
         if (ev.event === "delta") {
