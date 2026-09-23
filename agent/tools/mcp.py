@@ -55,6 +55,7 @@ class McpAdapter:
         self.server_name = server_name
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
+        self._spec: McpServer | None = None
 
     @property
     def connected(self) -> bool:
@@ -81,11 +82,18 @@ class McpAdapter:
             raise
         self._stack = stack
         self._session = session
+        self._spec = spec
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """Список инструментов сервера: имя, описание, JSON-схема аргументов."""
         session = self._require_session()
-        result = await session.list_tools()
+        try:
+            result = await session.list_tools()
+        except Exception as exc:
+            if not self._session_dead(exc):
+                raise
+            await self._reconnect()
+            result = await self._require_session().list_tools()
         return [
             {
                 "name": tool.name,
@@ -98,7 +106,13 @@ class McpAdapter:
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
         """Вызвать инструмент сервера и смаппить результат в `ToolResult`."""
         session = self._require_session()
-        result = await session.call_tool(name, arguments=arguments)
+        try:
+            result = await session.call_tool(name, arguments=arguments)
+        except Exception as exc:
+            if not self._session_dead(exc):
+                raise
+            await self._reconnect()
+            result = await self._require_session().call_tool(name, arguments=arguments)
         is_error = bool(getattr(result, "is_error", False))
         content = getattr(result, "content", None)
         if isinstance(content, list):
@@ -107,6 +121,23 @@ class McpAdapter:
         else:
             output = str(content)
         return ToolResult(output=output, is_error=is_error)
+
+    @staticmethod
+    def _session_dead(exc: Exception) -> bool:
+        """Является ли ошибка следствием мёртвой сессии (например, перезапуск сервера)."""
+        text = str(exc).lower()
+        return (
+            "session not found" in text
+            or "session terminated" in text
+            or "invalid session id" in text
+            or "session is no longer" in text
+        )
+
+    async def _reconnect(self) -> None:
+        """Переподключиться после перезапуска сервера: закрыть и создать сессию заново."""
+        await self.close()
+        if self._spec is not None:
+            await self.connect(self._spec)
 
     async def sync_tools(self, registry: ToolRegistry) -> int:
         """Зарегистрировать инструменты сервера в `registry` как динамические."""

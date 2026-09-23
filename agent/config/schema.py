@@ -61,6 +61,7 @@ class McpServer(BaseModel):
     command: str | None = Field(default=None, description="Команда для stdio-транспорта")
     args: list[str] = Field(default_factory=list, description="Аргументы команды для stdio")
     url: str | None = Field(default=None, description="URL для http-транспорта")
+    enabled: bool = Field(default=True, description="Включён ли сервер по умолчанию")
 
     @model_validator(mode="after")
     def _validate_transport_fields(self) -> McpServer:
