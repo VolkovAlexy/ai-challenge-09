@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from agent.config.schema import AgentSettings, Config, Provider
 from agent.core.compactor import CompactionResult, ContextCompactor
@@ -36,6 +37,7 @@ from agent.llm.client import LLMClient, LLMError
 from agent.memory.facts import FactsExtractor
 from agent.memory.longterm import LongTermSource
 from agent.memory.session import InMemorySession, SessionData, save_session
+from agent.tools.context import ToolContext
 from agent.tools.invariants import invariant_tools
 from agent.tools.registry import Tool, ToolRegistry
 from agent.tools.scratchpad import parse_tool_arguments, scratchpad_tools
@@ -608,9 +610,12 @@ class Agent:
         if tool is None:
             output = f"инструмент '{call.function.name}' не найден"
         else:
+            ctx = ToolContext(
+                session=self.memory, agent=self, project_id=self.project_id, run_id=uuid4().hex
+            )
             try:
                 arguments = parse_tool_arguments(call.function.arguments)
-                result = await tool.execute(arguments)
+                result = await tool.execute(arguments, ctx)
                 output = result.output
             except ValueError as exc:
                 output = f"неверные аргументы: {exc}"
@@ -628,6 +633,18 @@ class Agent:
         """
         for tool in tools:
             self._tools.register(tool)
+
+    def sync_dynamic_tools(self, tools: Sequence[Tool]) -> None:
+        """Заменяет набор динамических (внешних, MCP) инструментов агента.
+
+        Убирает все ранее зарегистрированные динамические инструменты и
+        регистрирует переданные заново. Статические инструменты агента
+        (рабочая память, задача, делегирование) не затрагиваются.
+        """
+        for name in list(self._tools._dynamic):
+            self._tools.unregister(name)
+        for tool in tools:
+            self._tools.register_dynamic(tool)
 
     # --- события субагентов (оркестратор → SSE-стример) ---
 

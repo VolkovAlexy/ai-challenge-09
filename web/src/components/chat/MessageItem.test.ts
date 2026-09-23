@@ -89,6 +89,38 @@ describe("MessageItem", () => {
     expect(w.find(".msg-reasoning").exists()).toBe(false);
   });
 
+  it("результат инструмента: свёрнут — первые 3 строки, клик раскрывает всё", async () => {
+    const m: MessageDTO = {
+      id: "8",
+      role: "tool",
+      tool_name: "browser_navigate",
+      content: "строка 1\nстрока 2\nстрока 3\nстрока 4\nстрока 5",
+    };
+    const w = mount(MessageItem, { props: { message: m } });
+    const block = w.find(".msg-note.msg-tool");
+    expect(block.exists()).toBe(true);
+    expect(block.find(".msg-tool-body").text()).toBe("🔧 browser_navigate: строка 1\nстрока 2\nстрока 3\n…");
+    await block.trigger("click");
+    expect(block.find(".msg-tool-body").text()).toBe(
+      "🔧 browser_navigate: строка 1\nстрока 2\nстрока 3\nстрока 4\nстрока 5",
+    );
+  });
+
+  it("короткий результат инструмента не свернут и не сворачивается", async () => {
+    const m: MessageDTO = {
+      id: "9",
+      role: "tool",
+      tool_name: "echo",
+      content: "одна строка",
+    };
+    const w = mount(MessageItem, { props: { message: m } });
+    const block = w.find(".msg-note.msg-tool");
+    expect(block.find(".msg-tool-caret").exists()).toBe(false);
+    expect(block.find(".msg-tool-body").text()).toBe("🔧 echo: одна строка");
+    await block.trigger("click");
+    expect(block.find(".msg-tool-body").text()).toBe("🔧 echo: одна строка");
+  });
+
   it("ошибка рендерится отдельным стилем", () => {
     const m: MessageDTO = {
       id: "4",

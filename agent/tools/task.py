@@ -12,6 +12,7 @@ from typing import Any
 
 from agent.core.task import InvalidTaskTransition, TaskPhase
 from agent.memory.session import InMemorySession
+from agent.tools.context import ToolContext
 from agent.tools.registry import Tool, ToolResult
 
 # подписи фаз, которые модель может использовать в аргументах
@@ -151,7 +152,7 @@ class TaskReadTool:
         self._memory = memory
         self.parameters = _EMPTY_PARAMS.copy()
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(output=_state_text(self._memory))
 
 
@@ -168,7 +169,7 @@ class TaskStartTool:
         self._memory = memory
         self.parameters = _START_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         description = str(arguments.get("description", "")).strip()
         if not description:
             return ToolResult(output="Ошибка: description не может быть пустым", is_error=True)
@@ -199,7 +200,7 @@ class TaskSetPhaseTool:
         self._memory = memory
         self.parameters = _SET_PHASE_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             phase = _parse_phase(arguments.get("phase", ""))
         except ValueError as exc:
@@ -228,7 +229,7 @@ class TaskAdvanceStepTool:
         self._memory = memory
         self.parameters = _STEP_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         expected_action = str(arguments.get("expected_action", "")).strip()
         done = bool(arguments.get("done", True))
         try:
@@ -251,7 +252,7 @@ class TaskSetExpectedActionTool:
         self._memory = memory
         self.parameters = _ACTION_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         text = str(arguments.get("expected_action", "")).strip()
         if not text:
             return ToolResult(output="Ошибка: expected_action не может быть пустым", is_error=True)
@@ -269,7 +270,7 @@ class TaskPauseTool:
         self._memory = memory
         self.parameters = _EMPTY_PARAMS.copy()
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self._memory.task.pause()
         return ToolResult(output=_note(self._memory.task.describe()))
 
@@ -284,7 +285,7 @@ class TaskResumeTool:
         self._memory = memory
         self.parameters = _EMPTY_PARAMS.copy()
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self._memory.task.resume()
         return ToolResult(output=_note(self._memory.task.describe()))
 
@@ -299,7 +300,7 @@ class TaskResetTool:
         self._memory = memory
         self.parameters = _EMPTY_PARAMS.copy()
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self._memory.task.reset()
         return ToolResult(output="Задача сброшена.")
 
@@ -318,7 +319,7 @@ class TaskUpdatePlanTool:
         self._memory = memory
         self.parameters = _UPDATE_PLAN_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         steps = [str(s) for s in arguments.get("steps", []) if str(s).strip()]
         if not steps:
             return ToolResult(output="Ошибка: steps не может быть пустым", is_error=True)

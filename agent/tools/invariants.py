@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.memory.session import InMemorySession
+from agent.tools.context import ToolContext
 from agent.tools.registry import Tool, ToolResult
 
 INVARIANTS_LIMIT = 50  # защита от раздувания контекста
@@ -73,7 +74,7 @@ class InvariantAddTool:
         self._memory = memory
         self.parameters = _ADD_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         text = str(arguments.get("text", "")).strip()
         if not text:
             return ToolResult(output="Ошибка: text не может быть пустым", is_error=True)
@@ -99,7 +100,7 @@ class InvariantRemoveTool:
         self._memory = memory
         self.parameters = _REMOVE_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         try:
             index = int(arguments.get("index", 0))
         except (ValueError, TypeError):
@@ -122,7 +123,7 @@ class InvariantListTool:
         self._memory = memory
         self.parameters = _EMPTY_PARAMS.copy()
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         return ToolResult(output=_invariant_text(self._memory))
 
 
@@ -136,7 +137,7 @@ class InvariantClearTool:
         self._memory = memory
         self.parameters = _EMPTY_PARAMS.copy()
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         self._memory.invariants = []
         return ToolResult(output="Список ограничений очищен.")
 

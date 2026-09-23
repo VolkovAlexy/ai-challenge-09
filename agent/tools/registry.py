@@ -1,8 +1,12 @@
-"""ToolRegistry — задел под инструменты (в v1 пуст, реализация позже).
+"""ToolRegistry — реестр инструментов агента.
 
 Контракт зафиксирован: MCP-адаптер и другие источники инструментов
 будут регистрировать свои `Tool` в общий реестр, который `Agent.ask()`
 использует для исполнения tool_calls и формирования `tools` в запросе.
+
+Реестр разделён на два пула: статические инструменты (встроенные,
+привязанные к агенту/сессии) и динамические (внешние, например из MCP).
+Статический инструмент затеняет динамический с тем же именем.
 """
 
 from __future__ import annotations
@@ -11,6 +15,8 @@ from collections.abc import Sequence
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
+
+from agent.tools.context import ToolContext
 
 
 class ToolResult(BaseModel):
@@ -28,29 +34,50 @@ class Tool(Protocol):
     description: str
     parameters: dict[str, Any]  # JSON Schema аргументов
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult: ...
+    async def execute(
+        self, arguments: dict[str, Any], ctx: ToolContext
+    ) -> ToolResult: ...
 
 
 class ToolRegistry:
-    """Реестр инструментов. Пустой в v1 — MCP-серверы зарегистрируют свои."""
+    """Реестр инструментов: статические и динамические пулы.
+
+    Статические инструменты регистрируются через `register`, динамические
+    (MCP и прочие внешние источники) — через `register_dynamic`. Правило
+    приоритета: статический инструмент затеняет динамический с тем же
+    именем — динамическая регистрация игнорируется.
+    """
 
     def __init__(self) -> None:
-        self._tools: dict[str, Tool] = {}
+        self._static: dict[str, Tool] = {}
+        self._dynamic: dict[str, Tool] = {}
 
     def register(self, tool: Tool) -> None:
-        """Добавляет инструмент (повторное имя — перезапись)."""
-        self._tools[tool.name] = tool
+        """Добавляет статический инструмент (повторное имя — перезапись).
+
+        Статический инструмент вытесняет одноимённый динамический, то есть
+        фактически затеняет его во всех операциях реестра.
+        """
+        self._static[tool.name] = tool
+        self._dynamic.pop(tool.name, None)
+
+    def register_dynamic(self, tool: Tool) -> None:
+        """Добавляет динамический инструмент; статический с тем же именем затеняет его."""
+        if tool.name in self._static:
+            return
+        self._dynamic[tool.name] = tool
 
     def unregister(self, name: str) -> None:
-        self._tools.pop(name, None)
+        self._static.pop(name, None)
+        self._dynamic.pop(name, None)
 
     def get(self, name: str) -> Tool | None:
-        """Возвращает инструмент по имени или None."""
-        return self._tools.get(name)
+        """Возвращает инструмент по имени (статический приоритетнее) или None."""
+        return self._static.get(name) or self._dynamic.get(name)
 
     def all(self) -> Sequence[Tool]:
-        """Все зарегистрированные инструменты."""
-        return tuple(self._tools.values())
+        """Все зарегистрированные инструменты (статические, затем динамические)."""
+        return tuple(self._static.values()) + tuple(self._dynamic.values())
 
     def to_api_tools(self) -> list[dict[str, Any]]:
         """Сериализация в формат OpenAI-параметра `tools` (для будущих запросов)."""
@@ -63,8 +90,8 @@ class ToolRegistry:
                     "parameters": tool.parameters,
                 },
             }
-            for tool in self._tools.values()
+            for tool in self.all()
         ]
 
     def __len__(self) -> int:
-        return len(self._tools)
+        return len(self._static) + len(self._dynamic)

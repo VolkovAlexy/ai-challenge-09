@@ -6,11 +6,12 @@
 import { computed, ref } from "vue";
 import { NButton, NScrollbar } from "naive-ui";
 import { useAgentsStore } from "@/stores/agents";
+import McpPanel from "./McpPanel.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import ProfilePanel from "./ProfilePanel.vue";
 import TaskPanel from "./TaskPanel.vue";
 
-type Tab = "task" | "memory" | "profiles" | "settings" | null;
+type Tab = "task" | "memory" | "profiles" | "mcp" | "settings" | null;
 
 const activeTab = ref<Tab>(null);
 
@@ -42,6 +43,7 @@ const TITLES: Record<Exclude<Tab, null>, string> = {
   task: "Задача",
   memory: "Память",
   profiles: "Профили",
+  mcp: "MCP",
   settings: "Настройки",
 };
 const rpTitle = computed(() => (activeTab.value === null ? "" : TITLES[activeTab.value]));
@@ -81,6 +83,15 @@ const rpTitle = computed(() => (activeTab.value === null ? "" : TITLES[activeTab
         </n-button>
         <n-button
           class="rp-bar-btn"
+          :class="{ active: activeTab === 'mcp' }"
+          quaternary
+          title="MCP"
+          @click="toggle('mcp')"
+        >
+          <span class="rp-bar-icon" aria-hidden="true">🔌</span>
+        </n-button>
+        <n-button
+          class="rp-bar-btn"
           :class="{ active: activeTab === 'settings' }"
           quaternary
           title="Настройки"
@@ -102,6 +113,7 @@ const rpTitle = computed(() => (activeTab.value === null ? "" : TITLES[activeTab
               <TaskPanel v-if="activeTab === 'task'" :active="true" />
               <MemoryPanel v-else-if="activeTab === 'memory'" :active="true" />
               <ProfilePanel v-else-if="activeTab === 'profiles'" :active="true" />
+              <McpPanel v-else-if="activeTab === 'mcp'" :active="true" />
               <div v-else class="rp-placeholder">Настройки — следующая итерация</div>
             </div>
           </n-scrollbar>

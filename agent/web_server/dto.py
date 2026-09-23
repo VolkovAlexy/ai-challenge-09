@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -152,6 +153,24 @@ class SessionInfoDTO(BaseModel):
     project_id: str = ""
 
 
+class McpToolDTO(BaseModel):
+    """Описание одного инструмента MCP-сервера для панели."""
+
+    name: str
+    description: str = ""
+
+
+class McpDTO(BaseModel):
+    """Состояние MCP-сервера для фронтенда (без command/args/url)."""
+
+    name: str
+    transport: Literal["stdio", "http"]
+    status: Literal["connecting", "available", "unavailable"]
+    enabled: bool = True
+    tool_count: int = 0
+    tools: list[McpToolDTO] = []  # инструменты доступного сервера (имена + описания)
+
+
 # --- запросы ---
 
 
@@ -258,3 +277,9 @@ class TaskCommandRequest(BaseModel):
 
 class ForkRequest(BaseModel):
     message_index: int
+
+
+class McpPatchRequest(BaseModel):
+    """Включить/выключить MCP-сервер (глобально на процесс)."""
+
+    enabled: bool

@@ -1,51 +1,136 @@
-"""McpAdapter — задел под MCP (в v1 stub, реализация позже).
+"""McpAdapter — подключение MCP-сервера через официальный `mcp` Python SDK.
 
-План: подключение MCP-сервера (транспорты stdio / streamable-http) через
-официальный `mcp` Python SDK, перечисление его инструментов и маппинг на
-`Tool` с ре-экспортом в общий `ToolRegistry`, которым уже владеет Agent.
+Поддерживаемые транспорты: `stdio` (локальный процесс по команде) и `http`
+(streamable-http по URL). Адаптер перечисляет инструменты сервера и регистрирует
+каждый как динамический `Tool` в общем `ToolRegistry`, которыми владеет Agent.
 """
 
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from typing import Any, Protocol
 
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamable_http_client
+
+from agent.config.schema import McpServer
+from agent.tools.context import ToolContext
 from agent.tools.registry import ToolRegistry, ToolResult
+
+__all__ = ["McpAdapter", "McpConnection"]
 
 
 class McpConnection(Protocol):
-    """Соединение с MCP-сервером (контракт, реализация — при подключении SDK)."""
+    """Соединение с MCP-сервером (контракт для зависимостей адаптера)."""
 
-    async def list_tools(self) -> list[Any]: ...
+    async def list_tools(self) -> list[dict[str, Any]]: ...
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult: ...
 
 
-class McpAdapter:
-    """Адаптер MCP-сервера в ToolRegistry (stub в v1).
+class _McpTool:
+    """Обёртка MCP-инструмента как Tool: `execute` делегирует в `call_tool` адаптера."""
 
-    Будущий контракт:
-    - `connect(spec)` — подключение по спецификации (stdio-команда или http-url);
-    - `sync_tools(registry)` — перечислить инструменты сервера и зарегистрировать
-      каждый как `Tool`, чей `execute` вызывает `call_tool`;
-    - `close()` — закрыть соединение.
-    """
+    def __init__(
+        self,
+        adapter: McpAdapter,
+        name: str,
+        description: str,
+        parameters: dict[str, Any],
+    ) -> None:
+        self._adapter = adapter
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        return await self._adapter.call_tool(self.name, arguments)
+
+
+class McpAdapter:
+    """Адаптер MCP-сервера в ToolRegistry через `mcp` Python SDK."""
 
     def __init__(self, server_name: str) -> None:
         self.server_name = server_name
-        self._connection: McpConnection | None = None
+        self._stack: AsyncExitStack | None = None
+        self._session: ClientSession | None = None
 
     @property
     def connected(self) -> bool:
-        return self._connection is not None
+        return self._session is not None
 
-    def connect(self, spec: str) -> None:
-        """Подключиться к MCP-серверу (stub: реализация при добавлении SDK)."""
-        raise NotImplementedError("McpAdapter.connect — задел, реализация после v1")
+    async def connect(self, spec: McpServer) -> None:
+        """Подключиться по спецификации: `http` — streamable-http, иначе `stdio`."""
+        if self._session is not None:
+            raise RuntimeError("соединение уже установлено")
+        stack = AsyncExitStack()
+        try:
+            if spec.transport == "http":
+                streams = await stack.enter_async_context(
+                    streamable_http_client(spec.url or "")
+                )
+            else:
+                params = StdioServerParameters(command=spec.command or "", args=spec.args)
+                streams = await stack.enter_async_context(stdio_client(params))
+            read, write = streams
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+        except BaseException:
+            await stack.aclose()
+            raise
+        self._stack = stack
+        self._session = session
 
-    def sync_tools(self, registry: ToolRegistry) -> int:
-        """Зарегистрировать инструменты сервера в registry (stub)."""
-        raise NotImplementedError("McpAdapter.sync_tools — задел, реализация после v1")
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """Список инструментов сервера: имя, описание, JSON-схема аргументов."""
+        session = self._require_session()
+        result = await session.list_tools()
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description or "",
+                "parameters": tool.input_schema,
+            }
+            for tool in result.tools
+        ]
 
-    def close(self) -> None:
-        """Закрыть соединение (stub: в v1 нечего закрывать)."""
-        self._connection = None
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        """Вызвать инструмент сервера и смаппить результат в `ToolResult`."""
+        session = self._require_session()
+        result = await session.call_tool(name, arguments=arguments)
+        is_error = bool(getattr(result, "is_error", False))
+        content = getattr(result, "content", None)
+        if isinstance(content, list):
+            parts = [c.text for c in content if getattr(c, "type", "") == "text"]
+            output = "\n".join(parts)
+        else:
+            output = str(content)
+        return ToolResult(output=output, is_error=is_error)
+
+    async def sync_tools(self, registry: ToolRegistry) -> int:
+        """Зарегистрировать инструменты сервера в `registry` как динамические."""
+        count = 0
+        for item in await self.list_tools():
+            registry.register_dynamic(
+                _McpTool(
+                    self,
+                    item["name"],
+                    f"[MCP:{self.server_name}] {item['description']}".strip(),
+                    item["parameters"],
+                )
+            )
+            count += 1
+        return count
+
+    async def close(self) -> None:
+        """Закрыть соединение (сессию и транспорт)."""
+        if self._stack is not None:
+            await self._stack.aclose()
+            self._stack = None
+        self._session = None
+
+    def _require_session(self) -> ClientSession:
+        if self._session is None:
+            raise RuntimeError("MCP-соединение не установлено")
+        return self._session

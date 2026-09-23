@@ -25,6 +25,7 @@ from agent.core.agent import AgentBusyError
 from agent.core.task import InvalidTaskTransition
 from agent.llm.client import LLMClient
 from agent.memory.persistence import SessionStore
+from agent.tools.mcp_manager import McpManager
 from agent.tools.registry import ToolRegistry
 from agent.web_server import dto
 from agent.web_server.state import (
@@ -55,12 +56,18 @@ def create_app(state: WebState) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tick = asyncio.create_task(_autosave_loop(state, AUTOSAVE_INTERVAL))
+        probe = asyncio.create_task(state.start_mcp())
         try:
             yield
         finally:
             tick.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await tick
+            probe.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await probe
+            if state.mcp is not None:
+                await state.mcp.stop()
             await state.llm.close()
             state.store.close()
 
@@ -87,6 +94,19 @@ def create_app(state: WebState) -> FastAPI:
     @app.get("/api/commands")
     def get_commands() -> list[dto.CommandDTO]:
         return state.commands_dto(default_registry())
+
+    # --- MCP-серверы ---
+
+    @app.get("/api/mcp")
+    async def get_mcp() -> list[dto.McpDTO]:
+        return state.list_mcp()
+
+    @app.patch("/api/mcp/{name}")
+    async def patch_mcp(name: str, body: dto.McpPatchRequest) -> list[dto.McpDTO]:
+        try:
+            return await state.set_mcp_enabled(name, body.enabled)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     # --- системный промпт (активный агент) ---
 
@@ -466,6 +486,7 @@ def main() -> None:
     config = load_config(args.config)
     llm = LLMClient()
     tools = ToolRegistry()
+    mcp = McpManager(config.mcp_servers)
     store = SessionStore(args.sessions or _sessions_db())
     prompt_path = Path(DEFAULT_SYSTEM_PROMPT_PATH)
     prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
@@ -476,6 +497,7 @@ def main() -> None:
         store=store,
         default_system_prompt=prompt,
         default_prompt_path=DEFAULT_SYSTEM_PROMPT_PATH,
+        mcp=mcp,
     )
     app = create_app(state)
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)

@@ -125,6 +125,29 @@ export interface ProfileDTO {
   content: string;
 }
 
+export type McpStatus = "connecting" | "available" | "unavailable";
+
+/** Описание одного инструмента MCP-сервера. */
+export interface McpToolDTO {
+  name: string;
+  description: string;
+}
+
+/** Состояние MCP-сервера для панели (команда/URL не отдаются). */
+export interface McpDTO {
+  name: string;
+  transport: "stdio" | "http";
+  status: McpStatus;
+  enabled: boolean;
+  tool_count: number;
+  tools?: McpToolDTO[];
+}
+
+/** Тело PATCH /api/mcp/{name} — глобальный вкл/выкл сервера. */
+export interface McpPatchRequest {
+  enabled: boolean;
+}
+
 export interface PatchAgentDTO {
   name?: string;
   model?: string;

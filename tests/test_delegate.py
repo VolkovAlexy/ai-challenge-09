@@ -8,6 +8,7 @@ from agent.core.agent import Agent
 from agent.core.message import ChatChunk, Role, ToolCallDelta
 from agent.llm.client import LLMError
 from agent.memory.persistence import SessionStore
+from agent.tools.context import ToolContext
 from agent.tools.delegate import DelegateTool, ListSubagentsTool, delegate_tools
 from tests.test_agent import make_config
 
@@ -106,6 +107,13 @@ def _in_execution(agent: Agent) -> None:
     agent.memory.task.to_execution()
 
 
+def _ctx(agent: Agent) -> ToolContext:
+    """Контекст запуска для прямого вызова инструмента в тесте."""
+    return ToolContext(
+        session=agent.memory, agent=agent, project_id=agent.project_id, run_id="r1"
+    )
+
+
 def test_delegate_executes_subagent_and_returns_answer() -> None:
     store, config, settings = _local_env()
     llm = SequencerLLM(
@@ -158,12 +166,12 @@ def test_delegate_resolves_profile_by_name_and_id() -> None:
     agent = _orchestrator(llm, store, config, settings)
     _in_execution(agent)
     tool = _delegate(agent)
-    by_name = asyncio.run(tool.execute({"role": "писатель", "task": "T"}))
+    by_name = asyncio.run(tool.execute({"role": "писатель", "task": "T"}, _ctx(agent)))
     assert by_name.is_error is False
     assert by_name.output == "A"
-    by_id = asyncio.run(tool.execute({"role": profile.id, "task": "T"}))
+    by_id = asyncio.run(tool.execute({"role": profile.id, "task": "T"}, _ctx(agent)))
     assert by_id.is_error is False
-    unknown = asyncio.run(tool.execute({"role": "нет", "task": "T"}))
+    unknown = asyncio.run(tool.execute({"role": "нет", "task": "T"}, _ctx(agent)))
     assert unknown.is_error is True
     assert "не найден" in unknown.output
 
@@ -174,9 +182,9 @@ def test_delegate_requires_role_and_task() -> None:
     llm = FixedLLM()
     agent = _orchestrator(llm, store, config, settings)
     tool = _delegate(agent)
-    no_role = asyncio.run(tool.execute({"task": "T"}))
+    no_role = asyncio.run(tool.execute({"task": "T"}, _ctx(agent)))
     assert no_role.is_error is True
-    no_task = asyncio.run(tool.execute({"role": "писатель"}))
+    no_task = asyncio.run(tool.execute({"role": "писатель"}, _ctx(agent)))
     assert no_task.is_error is True
 
 
@@ -187,7 +195,9 @@ def test_delegate_invalid_model_is_error() -> None:
     agent = _orchestrator(llm, store, config, settings)
     _in_execution(agent)
     tool = _delegate(agent)
-    result = asyncio.run(tool.execute({"role": "писатель", "task": "T", "model": "p1:nope"}))
+    result = asyncio.run(
+        tool.execute({"role": "писатель", "task": "T", "model": "p1:nope"}, _ctx(agent))
+    )
     assert result.is_error is True
 
 
@@ -198,7 +208,7 @@ def test_delegate_propagates_subagent_llm_error() -> None:
     agent = _orchestrator(llm, store, config, settings)
     _in_execution(agent)
     tool = _delegate(agent)
-    result = asyncio.run(tool.execute({"role": "писатель", "task": "T"}))
+    result = asyncio.run(tool.execute({"role": "писатель", "task": "T"}, _ctx(agent)))
     assert result.is_error is True
     assert "Ошибка субагента" in result.output
 
@@ -210,7 +220,7 @@ def test_list_subagents_returns_project_profiles() -> None:
     llm = FixedLLM()
     agent = _orchestrator(llm, store, config, settings)
     tool = _list_subagents(agent)
-    result = asyncio.run(tool.execute({}))
+    result = asyncio.run(tool.execute({}, _ctx(agent)))
     assert "писатель" in result.output
     assert "редактор" in result.output
 
@@ -222,11 +232,11 @@ def test_delegate_refused_outside_execution_or_validation() -> None:
     agent = _orchestrator(llm, store, config, settings)
     tool = _delegate(agent)
     # в состоянии без задачи (IDLE) делегировать нельзя
-    result = asyncio.run(tool.execute({"role": "писатель", "task": "T"}))
+    result = asyncio.run(tool.execute({"role": "писатель", "task": "T"}, _ctx(agent)))
     assert result.is_error is True
     assert "доступно только" in result.output
     # в планировании (до подтверждения плана) тоже нельзя
     agent.memory.task.start("задача", ["шаг"])
-    result = asyncio.run(tool.execute({"role": "писатель", "task": "T"}))
+    result = asyncio.run(tool.execute({"role": "писатель", "task": "T"}, _ctx(agent)))
     assert result.is_error is True
     assert "доступно только" in result.output

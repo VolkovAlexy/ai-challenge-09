@@ -52,6 +52,25 @@ class Provider(BaseModel):
         return v.rstrip("/")
 
 
+class McpServer(BaseModel):
+    """Описание одного MCP-сервера: транспорты stdio (команда) или http (url)."""
+
+    transport: Literal["stdio", "http"] = Field(
+        default="stdio", description="Транспорт подключения: stdio или streamable-http"
+    )
+    command: str | None = Field(default=None, description="Команда для stdio-транспорта")
+    args: list[str] = Field(default_factory=list, description="Аргументы команды для stdio")
+    url: str | None = Field(default=None, description="URL для http-транспорта")
+
+    @model_validator(mode="after")
+    def _validate_transport_fields(self) -> McpServer:
+        if self.transport == "stdio" and not self.command:
+            raise ValueError("для stdio-транспорта требуется command")
+        if self.transport == "http" and not self.url:
+            raise ValueError("для http-транспорта требуется url")
+        return self
+
+
 class Config(BaseModel):
     """Глобальный конфиг (config.json): провайдеры + дефолтные параметры генерации."""
 
@@ -78,6 +97,9 @@ class Config(BaseModel):
         default=20,
         gt=0,
         description="Размер скользящего окна в сообщениях (стратегии sliding/facts)",
+    )
+    mcp_servers: dict[str, McpServer] = Field(
+        default_factory=dict, description="MCP-серверы (имя → описание подключения)"
     )
 
     @model_validator(mode="after")

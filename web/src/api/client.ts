@@ -7,6 +7,8 @@ import type {
   ConfigDTO,
   ForkResponseDTO,
   LongTermDTO,
+  McpDTO,
+  McpPatchRequest,
   MessageDTO,
   PatchAgentDTO,
   ProfileDTO,
@@ -119,6 +121,12 @@ export const api = {
     request<ProfileDTO[]>("PUT", `/projects/${projectId}/profiles`, { profile_ids: profileIds }),
 
   cancel: (id: string) => request<unknown>("POST", `/agents/${id}/cancel`),
+
+  // --- MCP-серверы ---
+
+  listMcp: () => request<McpDTO[]>("GET", "/mcp"),
+  setMcp: (name: string, body: McpPatchRequest) =>
+    request<McpDTO[]>("PATCH", `/mcp/${name}`, body),
 
   // --- память ---
 

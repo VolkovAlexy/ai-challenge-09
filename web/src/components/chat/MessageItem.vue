@@ -66,11 +66,21 @@ function toggleReasoning(): void {
 }
 
 /** результат инструмента: «🔧 имя: вывод» — полный текст переносится по строкам */
-const toolLine = computed(() => {
-  if (!isTool.value) return null;
+const toolExpanded = ref(false);
+const toolFull = computed(() => {
+  if (!isTool.value) return "";
   const name = props.message.tool_name ?? "инструмент";
-  return { name, full: props.message.content };
+  return `🔧 ${name}: ${props.message.content}`;
 });
+/** свёрнуто: первые 3 строки + многоточие; клик по сообщению раскрывает всё */
+const toolLines = computed(() => (toolFull.value === "" ? [] : toolFull.value.split("\n")));
+const toolTruncated = computed(() => toolLines.value.length > 3);
+const toolPreview = computed(() =>
+  toolTruncated.value ? `${toolLines.value.slice(0, 3).join("\n")}\n…` : toolFull.value,
+);
+function toggleTool(): void {
+  if (toolTruncated.value) toolExpanded.value = !toolExpanded.value;
+}
 
 /** имена инструментов, вызванных ассистентом (для бейджа) */
 const calledTools = computed(() => props.message.tool_calls ?? null);
@@ -125,8 +135,10 @@ const tokensLine = computed(() => {
         <div class="msg-body" v-html="userEscaped" />
       </template>
       <template v-else-if="isTool">
-        <div class="msg-note msg-tool">
-          🔧 {{ toolLine?.name }}: {{ toolLine?.full }}
+        <div class="msg-note msg-tool" :class="{ collapsed: toolTruncated }" @click="toggleTool">
+          <span v-if="toolTruncated" class="msg-tool-caret">{{ toolExpanded ? "▾" : "▸" }}</span>
+          <span v-if="!toolExpanded" class="msg-tool-body">{{ toolPreview }}</span>
+          <span v-else class="msg-tool-body">{{ toolFull }}</span>
         </div>
       </template>
       <div v-else class="msg-note">{{ message.content }}</div>
@@ -195,6 +207,13 @@ const tokensLine = computed(() => {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.msg-tool.collapsed {
+  cursor: pointer;
+}
+.msg-tool-caret {
+  margin-right: 4px;
+  opacity: 0.6;
 }
 .msg-reasoning {
   margin-bottom: 6px;

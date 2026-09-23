@@ -27,6 +27,7 @@ from agent.core.agent import Agent
 from agent.core.task import PHASE_LABELS, TaskPhase
 from agent.llm.client import LLMClient, LLMError
 from agent.memory.persistence import ProfileInfo, SessionStore
+from agent.tools.context import ToolContext
 from agent.tools.registry import Tool, ToolResult
 
 _DELEGATE_PARAMS: dict[str, Any] = {
@@ -80,7 +81,7 @@ class DelegateTool:
         self._config = config
         self.parameters = _DELEGATE_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         role = str(arguments.get("role", "")).strip()
         task = str(arguments.get("task", "")).strip()
         if not role:
@@ -163,7 +164,7 @@ class ListSubagentsTool:
         self._store = store
         self.parameters = _LIST_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         profiles: list[ProfileInfo] = []
         for profile_id in self._store.list_project_profiles(self._orchestrator.project_id):
             profile = self._store.get_profile(profile_id)

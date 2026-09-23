@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from agent.memory.session import InMemorySession
+from agent.tools.context import ToolContext
 from agent.tools.registry import Tool, ToolResult
 
 SCRATCHPAD_LIMIT = 8000  # символов; защита от раздувания контекста
@@ -59,7 +60,7 @@ class WriteScratchpadTool:
         self._memory = memory
         self.parameters = _WRITE_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         text = str(arguments.get("text", ""))
         if not text.strip():
             return ToolResult(output="Ошибка: text не может быть пустым", is_error=True)
@@ -80,7 +81,7 @@ class AppendScratchpadTool:
         self._memory = memory
         self.parameters = _APPEND_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         text = str(arguments.get("text", "")).strip()
         if not text:
             return ToolResult(output="Ошибка: text не может быть пустым", is_error=True)
@@ -100,7 +101,7 @@ class ReadScratchpadTool:
         self._memory = memory
         self.parameters = _READ_PARAMS
 
-    async def execute(self, arguments: dict[str, Any]) -> ToolResult:
+    async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if not self._memory.scratchpad:
             return ToolResult(output="(рабочая память пуста)")
         return ToolResult(output=self._memory.scratchpad)

@@ -15,6 +15,7 @@ import { api } from "@/api/client";
 import type { CommandDTO, PatchAgentDTO } from "@/api/types";
 import { useAgentsStore } from "@/stores/agents";
 import { useConfigStore } from "@/stores/config";
+import { useMcpStore } from "@/stores/mcp";
 import { useSessionsStore } from "@/stores/sessions";
 import { useProjectsStore } from "@/stores/projects";
 import { useProfilesStore } from "@/stores/profiles";
@@ -31,6 +32,7 @@ import ProjectMemoryModal from "@/components/ProjectMemoryModal.vue";
 
 const agentsStore = useAgentsStore();
 const configStore = useConfigStore();
+const mcpStore = useMcpStore();
 const sessionsStore = useSessionsStore();
 const projectsStore = useProjectsStore();
 const profilesStore = useProfilesStore();
@@ -103,6 +105,7 @@ watch(activeProjectId, (pid) => {
 
 async function boot(): Promise<void> {
   await configStore.load();
+  await mcpStore.load();
   try {
     const cmds = await api.getCommands();
     commandsDTO.value = cmds;

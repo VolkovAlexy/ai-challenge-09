@@ -19,6 +19,7 @@ from agent.llm.client import LLMClient
 from agent.memory.longterm import ProjectLongTermMemory
 from agent.memory.persistence import ProfileInfo, ProjectInfo, SessionStore
 from agent.tools.delegate import delegate_tools
+from agent.tools.mcp_manager import McpManager, McpStatusTool
 from agent.tools.registry import Tool, ToolRegistry
 from agent.web_server.dto import (
     AgentDTO,
@@ -26,6 +27,7 @@ from agent.web_server.dto import (
     CommandDTO,
     ConfigDTO,
     LongTermDTO,
+    McpDTO,
     MessageDTO,
     ProfileDTO,
     ProjectDTO,
@@ -67,11 +69,13 @@ class WebState:
         store: SessionStore,
         default_system_prompt: str,
         default_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
+        mcp: McpManager | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
         self.tools = tools
         self.store = store
+        self.mcp = mcp
         self.default_project_id = DEFAULT_PROJECT_ID
         self._default_system_prompt = default_system_prompt
         self._default_prompt_path = default_prompt_path
@@ -132,6 +136,8 @@ class WebState:
         if self.active_agent_id is None:
             self.active_agent_id = agent_id
         record.agent.register_tools(self._delegate_tools(record))
+        self._register_mcp_status(record)
+        self._sync_record_mcp(record)
         self.persist(record)
         return record
 
@@ -188,6 +194,8 @@ class WebState:
         self._records[agent_id] = record
         self.active_agent_id = agent_id
         record.agent.register_tools(self._delegate_tools(record))
+        self._register_mcp_status(record)
+        self._sync_record_mcp(record)
         self.persist(record)
         return record
 
@@ -204,6 +212,8 @@ class WebState:
         record.agent.apply_session(data)
         self._apply_profile_content(record)
         record.agent.register_tools(self._delegate_tools(record))
+        self._register_mcp_status(record)
+        self._sync_record_mcp(record)
         record.session_id = session_id
         record.project_id = project_id
         self.set_active(agent_id)
@@ -225,6 +235,42 @@ class WebState:
     def _delegate_tools(self, record: AgentRecord) -> list[Tool]:
         """Инструменты делегирования для агента, привязанные к его проекту (live)."""
         return delegate_tools(record.agent, self.store, self.llm, self.config)
+
+    def _register_mcp_status(self, record: AgentRecord) -> None:
+        """Регистрирует инструмент `mcp_status` (статистика MCP), если MCP настроен."""
+        if self.mcp is None:
+            return
+        record.agent.register_tools([McpStatusTool(self.mcp)])
+
+    def _sync_record_mcp(self, record: AgentRecord) -> None:
+        """Пересобирает динамические MCP-инструменты агента из менеджера."""
+        if self.mcp is None:
+            return
+        record.agent.sync_dynamic_tools(self.mcp.enabled_tools())
+
+    def _sync_all_mcp(self) -> None:
+        """Пересобирает MCP-инструменты у всех агентов."""
+        for record in self._records.values():
+            self._sync_record_mcp(record)
+
+    async def start_mcp(self) -> None:
+        """Пробинг всех MCP-серверов в фоне при старте + синк в существующие агенты."""
+        if self.mcp is None:
+            return
+        await self.mcp.connect_all()
+        self._sync_all_mcp()
+
+    async def set_mcp_enabled(self, name: str, enabled: bool) -> list[McpDTO]:
+        """Глобальный вкл/выкл MCP-сервера + пере-синк инструментов у агентов."""
+        if self.mcp is None:
+            raise KeyError("MCP не настроен")
+        await self.mcp.set_enabled(name, enabled)
+        self._sync_all_mcp()
+        return self.list_mcp()
+
+    def list_mcp(self) -> list[McpDTO]:
+        """Состояние всех MCP-серверов для панели."""
+        return self.mcp.dto_list() if self.mcp is not None else []
 
     # --- персист (аналог TUI _persist_tab/_tick) ---
 
