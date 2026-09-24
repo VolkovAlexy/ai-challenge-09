@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { NButton, NScrollbar, NDivider, NDropdown, NInput } from "naive-ui";
 import type { ProjectDTO, SessionInfoDTO } from "@/api/types";
 import { useProjectsStore } from "@/stores/projects";
@@ -29,6 +29,11 @@ const loaded = ref(false);
 onMounted(async () => {
   await Promise.all([projectsStore.load(), sessionsStore.loadAll()]);
   loaded.value = true;
+  sessionsStore.startPolling();
+});
+
+onUnmounted(() => {
+  sessionsStore.stopPolling();
 });
 
 /** Сессии, сгруппированные по project_id. */
@@ -240,7 +245,18 @@ function truncateModel(model: string | undefined): string {
                 />
               </template>
               <template v-else>
-                <div class="session-card-title">{{ session.title }}</div>
+                <div class="session-card-title">
+                  <span class="session-title-text">{{ session.title }}</span>
+                  <span
+                    v-if="session.has_scheduled"
+                    class="session-sched-icon"
+                    title="Есть запланированные задания"
+                  >⏰</span>
+                  <span
+                    v-if="session.unread_notifications"
+                    class="session-unread-badge"
+                  >{{ session.unread_notifications }}</span>
+                </div>
                 <div class="session-card-meta">
                   <span>{{ formatDate(session.updated_at) }}</span>
                   <span v-if="session.model" class="session-card-model">{{ truncateModel(session.model) }}</span>
@@ -422,6 +438,13 @@ function truncateModel(model: string | undefined): string {
 }
 
 .session-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 22px;
+}
+
+.session-title-text {
   font-size: 12px;
   line-height: 1.4;
   color: #c8ccd4;
@@ -430,7 +453,29 @@ function truncateModel(model: string | undefined): string {
   -webkit-box-orient: vertical;
   overflow: hidden;
   word-break: break-word;
-  padding-right: 22px;
+  flex: 1;
+  min-width: 0;
+}
+
+.session-sched-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+  cursor: help;
+}
+
+.session-unread-badge {
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #7aa2f7;
+  color: #14171c;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }
 
 .session-card-meta {

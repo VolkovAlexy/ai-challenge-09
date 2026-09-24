@@ -111,6 +111,10 @@ export interface SessionInfoDTO {
   message_count?: number;
   /** проект, которому принадлежит сессия */
   project_id?: string;
+  /** есть ли у сессии активные задания планировщика */
+  has_scheduled?: boolean;
+  /** число непрочитанных результатов планировщика */
+  unread_notifications?: number;
 }
 
 /** Проект (Слой 1): владеет долгосрочной памятью и набором сессий. */

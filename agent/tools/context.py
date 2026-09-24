@@ -25,3 +25,5 @@ class ToolContext:
     agent: Agent
     project_id: str
     run_id: str
+    agent_id: str = ""
+    session_id: str = ""

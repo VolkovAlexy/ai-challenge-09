@@ -96,6 +96,8 @@ export const api = {
     request<AgentDTO>("POST", `/sessions/${sessionId}/branch`),
   renameSession: (sessionId: string, title: string) =>
     request<{ ok: boolean }>("PATCH", `/sessions/${sessionId}`, { title }),
+  markSessionRead: (sessionId: string) =>
+    request<{ ok: boolean }>("POST", `/scheduler/mark-read?session_id=${encodeURIComponent(sessionId)}`),
 
   // --- проекты (Слой 1) ---
 

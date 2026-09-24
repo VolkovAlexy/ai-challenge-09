@@ -3,11 +3,14 @@ import { ref } from "vue";
 import { api } from "@/api/client";
 import type { SessionInfoDTO } from "@/api/types";
 
+const POLL_MS = 15000;
+
 export const useSessionsStore = defineStore("sessions", () => {
   const sessions = ref<SessionInfoDTO[]>([]);
   const loaded = ref(false);
   const loadError = ref<string | null>(null);
   const hasMore = ref(false);
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   async function load(limit?: number, offset?: number): Promise<void> {
     try {
@@ -31,6 +34,21 @@ export const useSessionsStore = defineStore("sessions", () => {
     await load(undefined, 0);
   }
 
+  /** Фоновое обновление флагов планировщика (иконки/бейджи) у сессий. */
+  function startPolling(): void {
+    if (pollTimer !== null) return;
+    pollTimer = setInterval(() => {
+      void loadAll();
+    }, POLL_MS);
+  }
+
+  function stopPolling(): void {
+    if (pollTimer !== null) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
   async function remove(sessionId: string): Promise<void> {
     await api.deleteSession(sessionId);
     await reload();
@@ -41,5 +59,17 @@ export const useSessionsStore = defineStore("sessions", () => {
     await reload();
   }
 
-  return { sessions, loaded, loadError, hasMore, load, reload, loadAll, remove, rename };
+  return {
+    sessions,
+    loaded,
+    loadError,
+    hasMore,
+    load,
+    reload,
+    loadAll,
+    startPolling,
+    stopPolling,
+    remove,
+    rename,
+  };
 });

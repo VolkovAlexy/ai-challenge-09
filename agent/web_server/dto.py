@@ -157,6 +157,8 @@ class SessionInfoDTO(BaseModel):
     model: str | None = None
     message_count: int | None = None
     project_id: str = ""
+    has_scheduled: bool = False
+    unread_notifications: int = 0
 
 
 class McpToolDTO(BaseModel):
@@ -298,3 +300,11 @@ class McpPatchRequest(BaseModel):
     """Включить/выключить MCP-сервер (глобально на процесс)."""
 
     enabled: bool
+
+
+class SchedulerEventRequest(BaseModel):
+    """Webhook-событие планировщика: job_added / job_removed / job_ran."""
+
+    event: str
+    job: dict[str, object] = {}
+    summary: dict[str, object] | None = None

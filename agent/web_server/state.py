@@ -32,6 +32,7 @@ from agent.web_server.dto import (
     ProfileDTO,
     ProjectDTO,
     ProviderDTO,
+    SchedulerEventRequest,
     SessionInfoDTO,
     SystemPromptDTO,
     TaskCommandOperation,
@@ -114,6 +115,8 @@ class WebState:
         if self.store.get_project(project_id) is None:
             raise KeyError(f"проект не найден: {project_id}")
         settings = AgentSettings.from_config(self.config)
+        agent_id = self.store.new_id()
+        session_id = self.store.new_id()
         agent = Agent(
             name=name or f"chat-{len(self._records) + 1}",
             settings=settings,
@@ -123,12 +126,13 @@ class WebState:
             tools=self.tools,
             longterm=ProjectLongTermMemory(self.store, project_id),
             project_id=project_id,
+            agent_id=agent_id,
+            session_id=session_id,
         )
-        agent_id = self.store.new_id()
         record = AgentRecord(
             agent_id=agent_id,
             agent=agent,
-            session_id=self.store.new_id(),
+            session_id=session_id,
             system_prompt_path=self._default_prompt_path,
             project_id=project_id,
         )
@@ -171,6 +175,8 @@ class WebState:
         if data is None:
             raise KeyError(f"сессия не найдена: {session_id}")
         project_id = self.store.get_project_id(session_id) or self.default_project_id
+        agent_id = self.store.new_id()
+        branch_session_id = self.store.new_id()
         agent = Agent(
             name=data.name or f"chat-{len(self._records) + 1}",
             settings=data.settings,
@@ -180,14 +186,15 @@ class WebState:
             tools=self.tools,
             longterm=ProjectLongTermMemory(self.store, project_id),
             project_id=project_id,
+            agent_id=agent_id,
+            session_id=branch_session_id,
         )
         agent.apply_session(data)
-        agent_id = self.store.new_id()
         record = AgentRecord(
             agent_id=agent_id,
             agent=agent,
             system_prompt_path=self._default_prompt_path,
-            session_id=self.store.new_id(),
+            session_id=branch_session_id,
             project_id=project_id,
         )
         self._apply_profile_content(record)
@@ -215,6 +222,8 @@ class WebState:
         self._register_mcp_status(record)
         self._sync_record_mcp(record)
         record.session_id = session_id
+        record.agent.agent_id = record.agent_id
+        record.agent.session_id = session_id
         record.project_id = project_id
         self.set_active(agent_id)
         self.persist(record)
@@ -330,6 +339,78 @@ class WebState:
         for record in self._records.values():
             if record.fingerprint != self._fingerprint(record):
                 self.persist(record)
+
+    # --- планировщик: уведомления о заданиях и их результатах ---
+
+    def handle_scheduler_event(self, body: SchedulerEventRequest) -> None:
+        """Обработка webhook-события планировщика (job_added / job_removed / job_ran).
+
+        job_added/job_removed — меняют счётчик активных заданий сессии;
+        job_ran — доставляет результат в сессию создателя: если сессия сейчас
+        загружена (live-агент), сообщение попадает в его историю, иначе
+        записывается напрямую в хранилище сессии. В обоих случаях растёт
+        счётчик непрочитанных сообщений.
+        """
+        session_id = str(body.job.get("owner_session_id", ""))
+        if not session_id:
+            return
+        if body.event == "job_added":
+            self.store.incr_scheduled(session_id)
+        elif body.event == "job_removed":
+            self.store.decr_scheduled(session_id)
+        elif body.event == "job_ran":
+            self._deliver_scheduler_result(session_id, body)
+
+    def _owner_record(self, session_id: str) -> AgentRecord | None:
+        """Live-агент, чья сессия автосохранения совпадает с session_id."""
+        for record in self._records.values():
+            if record.session_id == session_id:
+                return record
+        return None
+
+    def _deliver_scheduler_result(self, session_id: str, body: SchedulerEventRequest) -> None:
+        """Формирует сообщение-результат и доставляет его в сессию создателя."""
+        text = self._format_scheduler_result(body)
+        message_json = Message(role=Role.ASSISTANT, content=text).model_dump_json()
+        record = self._owner_record(session_id)
+        if record is not None:
+            record.agent.memory.add(Message(role=Role.ASSISTANT, content=text))
+            self.persist(record)
+        else:
+            self.store.append_notification(session_id, message_json)
+        self.store.incr_unread(session_id)
+
+    @staticmethod
+    def _format_scheduler_result(body: SchedulerEventRequest) -> str:
+        """Русский текст результата по типу задания."""
+        job = body.job
+        kind = str(job.get("kind", ""))
+        summary = body.summary or {}
+        name = str(job.get("name", ""))
+        title = f"⏰ Задание «{name}»"
+        if kind == "reminder":
+            note = summary.get("note")
+            return f"{title}\n{note}" if note else title
+        if kind == "collect":
+            data = summary.get("data")
+            if data:
+                return f"{title}: собраны данные: {data}"
+            return f"{title}: данные собраны"
+        if kind == "summary":
+            aggregate = summary.get("aggregate")
+            llm = summary.get("llm")
+            if llm:
+                return f"{title}: {llm}"
+            if aggregate:
+                return f"{title}: {aggregate}"
+            return f"{title}: сводка готова"
+        if "error" in summary:
+            return f"{title}: ошибка — {summary['error']}"
+        return title
+
+    def mark_session_read(self, session_id: str) -> None:
+        """Сбрасывает счётчик непрочитанных результатов сессии."""
+        self.store.clear_unread(session_id)
 
     # --- долговременная память (по слою проекта — Слой 1) ---
 
@@ -532,6 +613,8 @@ class WebState:
                 model=info.model,
                 message_count=info.message_count,
                 project_id=info.project_id,
+                has_scheduled=info.has_scheduled,
+                unread_notifications=info.unread_notifications,
             )
             for info in self.store.list(limit=limit, offset=offset, project_id=project_id)
         ]

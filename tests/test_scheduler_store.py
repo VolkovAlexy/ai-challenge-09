@@ -92,6 +92,30 @@ def test_complete_run_disables_oneshot_after_due() -> None:
     assert updated.enabled is False
 
 
+def test_complete_run_disables_interval_with_repeat_false() -> None:
+    store = make_store()
+    job = store.add_job(
+        "reminder", "r", {"type": "interval", "seconds": 300, "repeat": False}, {"m": "x"}
+    )
+    assert job.next_run is not None
+    # одноразовый interval: после срабатывания не перезапускается
+    store.complete_run(job, dt(2026, 9, 24, 10, 5, 0), {"note": "x"})
+    updated = store.get_job("r")
+    assert updated.next_run is None
+    assert updated.enabled is False
+
+
+def test_complete_run_interval_with_repeat_true_keeps_running() -> None:
+    store = make_store()
+    job = store.add_job(
+        "reminder", "r", {"type": "interval", "seconds": 300, "repeat": True}, {"m": "x"}
+    )
+    store.complete_run(job, dt(2026, 9, 24, 10, 5, 0), {"note": "x"})
+    updated = store.get_job("r")
+    assert updated.next_run is not None
+    assert updated.enabled is True
+
+
 def test_append_and_query_data_window() -> None:
     store = make_store()
     store.append_data("m", {"value": 1})

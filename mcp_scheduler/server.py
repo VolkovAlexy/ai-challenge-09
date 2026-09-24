@@ -49,13 +49,25 @@ class SchedulerService:
         trigger: dict[str, Any],
         payload: dict[str, Any] | None = None,
         url: str | None = None,
+        owner_agent_id: str = "",
+        owner_session_id: str = "",
+        owner_project_id: str = "",
     ) -> str:
         """Создаёт задание; возвращает JSON созданного задания."""
         merged: dict[str, Any] = dict(payload or {})
         if url:
             merged["url"] = url
-        job = self._store.add_job(kind, name, trigger, merged)
-        return json.dumps(_job_to_dict(job), ensure_ascii=False)
+        job = self._store.add_job(
+            kind,
+            name,
+            trigger,
+            merged,
+            owner_agent_id=owner_agent_id,
+            owner_session_id=owner_session_id,
+            owner_project_id=owner_project_id,
+        )
+        self._scheduler.notify_added(job)
+        return json.dumps(job.to_dict(), ensure_ascii=False)
 
     def schedule_list(self) -> str:
         """Список всех заданий (JSON-массив)."""
@@ -65,7 +77,11 @@ class SchedulerService:
 
     def schedule_remove(self, name: str) -> str:
         """Удаляет задание по имени; `removed` — False, если задания нет."""
-        return json.dumps({"removed": self._store.remove_job(name)}, ensure_ascii=False)
+        job = self._store.get_job(name)
+        removed = self._store.remove_job(name)
+        if removed and job is not None:
+            self._scheduler.notify_removed(job)
+        return json.dumps({"removed": removed}, ensure_ascii=False)
 
     async def schedule_run(self, name: str) -> str:
         """Исполняет задание немедленно; возвращает последнюю сводку запуска."""
@@ -92,17 +108,7 @@ class SchedulerService:
 
 
 def _job_to_dict(job: Job) -> dict[str, Any]:
-    return {
-        "id": job.id,
-        "kind": job.kind,
-        "name": job.name,
-        "trigger": job.trigger,
-        "payload": job.payload,
-        "enabled": job.enabled,
-        "created_at": job.created_at,
-        "last_run": job.last_run,
-        "next_run": job.next_run,
-    }
+    return job.to_dict()
 
 
 def make_server(
@@ -110,14 +116,17 @@ def make_server(
     config: Any = None,
     llm: Any = None,
     tick: float = 1.0,
+    notify_url: str | None = None,
 ) -> MCPServer:
     """Создаёт MCP-сервер планировщика над `SchedulerStore` (путь `db`).
 
     `config`/`llm` необязательны; их наличие включает LLM-сводки для summary.
+    `notify_url` — адрес `POST /api/scheduler/notify` web-сервера для доставки
+    результатов в сессию создателя.
     Lifespan запускает/останавливает фоновый цикл `Scheduler`.
     """
     store = SchedulerStore(db)
-    scheduler = Scheduler(store, config=config, llm=llm, tick=tick)
+    scheduler = Scheduler(store, config=config, llm=llm, tick=tick, notify_url=notify_url)
     service = SchedulerService(store, scheduler)
 
     @asynccontextmanager
@@ -146,7 +155,8 @@ def make_server(
                     "Правило расписания (dict): "
                     '{"type": "at", "at": "<ISO>"} — один раз в момент '
                     '(напр. "2026-09-24T12:00:00+00:00"); '
-                    '{"type": "interval", "seconds": 60} — каждые N секунд; '
+                    '{"type": "interval", "seconds": 60} — каждые N секунд '
+                    '(c "repeat": false — один раз через N секунд); '
                     '{"type": "cron", "expr": "0 9 * * 1"} — cron "m h dom mon dow". '
                     "Реальные числа: minutes не существует, нужен seconds."
                 )
@@ -158,9 +168,27 @@ def make_server(
         url: Annotated[
             str | None, Field(default=None, description="URL для сбора данных")
         ] = None,
+        owner_agent_id: Annotated[
+            str, Field(default="", description="Агент-создатель задания")
+        ] = "",
+        owner_session_id: Annotated[
+            str, Field(default="", description="Сессия-владелец (для доставки результата)")
+        ] = "",
+        owner_project_id: Annotated[
+            str, Field(default="", description="Проект владельца")
+        ] = "",
     ) -> str:
         """Создаёт отложенное/периодическое задание и возвращает его описание."""
-        return service.schedule_add(kind, name, trigger, payload=payload, url=url)
+        return service.schedule_add(
+            kind,
+            name,
+            trigger,
+            payload=payload,
+            url=url,
+            owner_agent_id=owner_agent_id,
+            owner_session_id=owner_session_id,
+            owner_project_id=owner_project_id,
+        )
 
     @server.tool()
     async def schedule_list() -> str:
@@ -216,10 +244,13 @@ def make_server(
 
 
 def make_http_app(
-    db: str, config: Any = None, llm: Any = None, tick: float = 1.0
+    db: str, config: Any = None, llm: Any = None, tick: float = 1.0, notify_url: str | None = None
 ) -> Starlette:
     """Streamable HTTP ASGI-приложение MCP-сервера планировщика."""
-    return make_server(db, config=config, llm=llm, tick=tick).streamable_http_app()
+    return (
+        make_server(db, config=config, llm=llm, tick=tick, notify_url=notify_url)
+        .streamable_http_app()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -233,6 +264,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=DEFAULT_DB, help="путь к SQLite-хранилищу")
     parser.add_argument("--tick", type=float, default=1.0, help="период тика планировщика (сек)")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="путь к config.json")
+    parser.add_argument(
+        "--notify-url",
+        default=None,
+        help="адрес POST /api/scheduler/notify web-сервера для доставки результатов",
+    )
     parser.add_argument("--stdio", action="store_true", help="запустить по stdio вместо HTTP")
     args = parser.parse_args(argv)
 
@@ -241,12 +277,15 @@ def main(argv: list[str] | None = None) -> int:
 
     config = load_config(args.config)
     llm = LLMClient()
+    notify_url = args.notify_url or (config.scheduler.notify_url if config.scheduler else None)
 
     if args.stdio:
-        asyncio.run(make_server(args.db, config, llm, args.tick).run_stdio_async())
+        asyncio.run(
+            make_server(args.db, config, llm, args.tick, notify_url).run_stdio_async()
+        )
         return 0
     uvicorn.run(
-        make_http_app(args.db, config, llm, args.tick),
+        make_http_app(args.db, config, llm, args.tick, notify_url),
         host="127.0.0.1",
         port=args.port,
         log_level="info",

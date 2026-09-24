@@ -12,6 +12,11 @@ from agent.tools.context import ToolContext
 from agent.tools.mcp import McpAdapter
 from agent.tools.registry import ToolRegistry, ToolResult
 
+try:
+    from mcp.shared.exceptions import MCPError
+except Exception:  # pragma: no cover - зависит от версии mcp SDK
+    MCPError = None  # type: ignore[assignment, misc]
+
 _SERVER_SRC = """
 import asyncio, sys
 from mcp import types
@@ -152,3 +157,20 @@ def test_mcp_server_schema_validation() -> None:
     assert McpServer(command="uv").command == "uv"
     # корректный http
     assert McpServer(transport="http", url="http://x/mcp").url == "http://x/mcp"
+
+
+def test_session_dead_matches_connection_closed() -> None:
+    # «Connection closed» — MCPError, который поднимается при обрыве streamable-http
+    # сессии (перезапуск планировщика). Ожидаем распознавание как «мёртвой» сессии.
+    if MCPError is not None:
+        exc = MCPError(-32000, message="Connection closed")
+        assert McpAdapter._session_dead(exc) is True
+    assert McpAdapter._session_dead(RuntimeError("connection closed")) is True
+    assert McpAdapter._session_dead(RuntimeError("Connection reset by peer")) is True
+    assert McpAdapter._session_dead(RuntimeError("stream closed")) is True
+
+
+def test_session_dead_does_not_match_tool_error() -> None:
+    # Ошибка уровня «инструмент не нашёл такой параметр» не является смертью сессии.
+    assert McpAdapter._session_dead(ValueError("unknown tool name")) is False
+    assert McpAdapter._session_dead(RuntimeError("bad request")) is False

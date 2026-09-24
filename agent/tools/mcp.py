@@ -45,7 +45,27 @@ class _McpTool:
         self.parameters = parameters
 
     async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        return await self._adapter.call_tool(self.name, arguments)
+        return await self._adapter.call_tool(self.name, self._inject_owner(arguments, ctx))
+
+    def _inject_owner(
+        self, arguments: dict[str, Any], ctx: ToolContext
+    ) -> dict[str, Any]:
+        """Дополняет аргументы идентификаторами владельца, если инструмент их объявляет.
+
+        Планировщик (mcp_scheduler) декларирует `owner_agent_id`/`owner_session_id`/
+        `owner_project_id` в схеме аргументов — тогда результат задания маршрутизируется
+        в сессию создателя. Для остальных MCP-инструментов ничего не добавляется.
+        """
+        result = dict(arguments)
+        properties = (self.parameters or {}).get("properties", {})
+        for key, value in (
+            ("owner_agent_id", ctx.agent_id),
+            ("owner_session_id", ctx.session_id),
+            ("owner_project_id", ctx.project_id),
+        ):
+            if key in properties:
+                result[key] = value
+        return result
 
 
 class McpAdapter:
@@ -124,13 +144,31 @@ class McpAdapter:
 
     @staticmethod
     def _session_dead(exc: Exception) -> bool:
-        """Является ли ошибка следствием мёртвой сессии (например, перезапуск сервера)."""
+        """Является ли ошибка следствием мёртвой сессии (например, перезапуск сервера).
+
+        Scheduler перезапускается в фоне, и тогда streamable-http сессия, которую
+        держит адаптер, становится недействительной: клиент получает
+        `MCPError(code=CONNECTION_CLOSED, message="Connection closed")`. Такие
+        транспортные ошибки (обрыв/сброс соединения) неотличимы от «мёртвой»
+        сессии по сути, поэтому распознаём их как повод переподключиться.
+        """
         text = str(exc).lower()
-        return (
-            "session not found" in text
-            or "session terminated" in text
-            or "invalid session id" in text
-            or "session is no longer" in text
+        return any(
+            phrase in text
+            for phrase in (
+                "session not found",
+                "session terminated",
+                "invalid session id",
+                "session is no longer",
+                "connection closed",
+                "connection reset",
+                "connection lost",
+                "connection error",
+                "stream closed",
+                "socket closed",
+                "read timeout",
+                "broken pipe",
+            )
         )
 
     async def _reconnect(self) -> None:

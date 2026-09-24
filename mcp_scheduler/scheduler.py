@@ -57,12 +57,15 @@ class Scheduler:
         config: Config | None = None,
         llm: LLMClient | None = None,
         tick: float = 1.0,
+        notify_url: str | None = None,
     ) -> None:
         self._store = store
         self._config = config
         self._llm = llm
         self._tick = tick
+        self._notify_url = notify_url
         self._task: asyncio.Task[None] | None = None
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     # --- управление циклом ---
 
@@ -102,16 +105,53 @@ class Scheduler:
     async def _run_job(self, job: Job, now: datetime) -> None:
         try:
             if job.kind == "reminder":
-                self._store.complete_run(job, now, {"note": job.payload.get("message", "")})
+                summary = {"note": job.payload.get("message", "")}
+                self._store.complete_run(job, now, summary)
             elif job.kind == "collect":
                 point = await _collect(job)
                 self._store.append_data(str(job.payload.get("data_kind", job.name)), point)
-                self._store.complete_run(job, now, {"collected": True})
+                summary = {"collected": True}
+                self._store.complete_run(job, now, summary)
             else:  # summary
                 summary = await self._summarize(job, now)
                 self._store.complete_run(job, now, summary)
         except Exception as exc:  # сбой задания не должен ронять цикл
-            self._store.complete_run(job, now, {"error": str(exc)})
+            summary = {"error": str(exc)}
+            self._store.complete_run(job, now, summary)
+        with suppress(Exception):
+            await self._notify("job_ran", job, summary)
+
+    async def _notify(
+        self, event: str, job: Job, summary: dict[str, object] | None = None
+    ) -> None:
+        """Best-effort уведомление владельца задания о событии (после исполнения)."""
+        if not self._notify_url:
+            return
+        payload: dict[str, object] = {"event": event, "job": job.to_dict()}
+        if summary is not None:
+            payload["summary"] = summary
+        async with httpx.AsyncClient() as client:
+            await client.post(self._notify_url, json=payload, timeout=5)
+
+    def notify_added(self, job: Job) -> None:
+        """Сообщает о создании задания (фоновый POST, если задан notify_url)."""
+        self._spawn_notify("job_added", job)
+
+    def notify_removed(self, job: Job) -> None:
+        """Сообщает об удалении задания (фоновый POST, если задан notify_url)."""
+        self._spawn_notify("job_removed", job)
+
+    def _spawn_notify(self, event: str, job: Job) -> None:
+        """Запускает уведомление фоном; без running-loop это no-op (тесты)."""
+        if not self._notify_url:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = asyncio.create_task(self._notify(event, job))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     async def _summarize(self, job: Job, now: datetime) -> dict[str, object]:
         """Агрегирует точки за `(last_run, now]`; добавляет LLM-сводку при возможности."""

@@ -29,7 +29,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     last_run TEXT,
-    next_run TEXT
+    next_run TEXT,
+    owner_agent_id TEXT NOT NULL DEFAULT '',
+    owner_session_id TEXT NOT NULL DEFAULT '',
+    owner_project_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
@@ -64,6 +67,26 @@ class Job:
     created_at: str
     last_run: str | None
     next_run: str | None
+    owner_agent_id: str = ""
+    owner_session_id: str = ""
+    owner_project_id: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        """Серийное представление задания (для MCP-ответа и webhook-уведомления)."""
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "name": self.name,
+            "trigger": self.trigger,
+            "payload": self.payload,
+            "enabled": self.enabled,
+            "created_at": self.created_at,
+            "last_run": self.last_run,
+            "next_run": self.next_run,
+            "owner_agent_id": self.owner_agent_id,
+            "owner_session_id": self.owner_session_id,
+            "owner_project_id": self.owner_project_id,
+        }
 
 
 def _now() -> str:
@@ -81,7 +104,18 @@ class SchedulerStore:
         self._lock = threading.Lock()
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
+        self._ensure_column("jobs", "owner_agent_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("jobs", "owner_session_id", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("jobs", "owner_project_id", "TEXT NOT NULL DEFAULT ''")
         self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, decl: str) -> None:
+        """Добавляет колонку в существующую таблицу (перенос на старые БД)."""
+        columns = {
+            row[1] for row in self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     @staticmethod
     def new_id() -> str:
@@ -95,6 +129,9 @@ class SchedulerStore:
         name: str,
         trigger: dict[str, object],
         payload: dict[str, object] | None = None,
+        owner_agent_id: str = "",
+        owner_session_id: str = "",
+        owner_project_id: str = "",
     ) -> Job:
         """Создаёт задание. Имя уникально (дубликат — ValueError). `enabled` по умолчанию True."""
         if kind not in JOB_KINDS:
@@ -113,8 +150,9 @@ class SchedulerStore:
                     """
                     INSERT INTO jobs
                         (id, kind, name, trigger_json, payload_json, enabled,
-                         created_at, last_run, next_run)
-                        VALUES (?, ?, ?, ?, ?, 1, ?, NULL, ?)
+                         created_at, last_run, next_run,
+                         owner_agent_id, owner_session_id, owner_project_id)
+                        VALUES (?, ?, ?, ?, ?, 1, ?, NULL, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -124,6 +162,9 @@ class SchedulerStore:
                         json.dumps(payload or {}, ensure_ascii=False),
                         now,
                         next_run,
+                        owner_agent_id,
+                        owner_session_id,
+                        owner_project_id,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -170,12 +211,17 @@ class SchedulerStore:
     ) -> str:
         """Фиксирует срабатывание: добавляет запись в `runs` и пересчитывает `next_run`.
 
-        Если для `next_run` будущего момента нет (например, одноразовый `at`),
-        задание отключается (`enabled = 0`). Возвращает id записи запуска.
+        Если для `next_run` будущего момента нет (например, одноразовый `at` или
+        interval-триггер с `repeat: false`), задание отключается (`enabled = 0`).
+        Возвращает id записи запуска.
         """
         run_id = self.new_id()
         ran_at_iso = _iso_string(ran_at)
-        next_iso = self._next_iso(job.trigger, ran_at_iso)
+        trigger = job.trigger
+        if trigger.get("type") == "interval" and trigger.get("repeat", True) is False:
+            next_iso = None
+        else:
+            next_iso = self._next_iso(trigger, ran_at_iso)
         enabled = 1 if next_iso is not None else 0
         with self._lock, self._conn:
             self._conn.execute(
@@ -254,6 +300,9 @@ class SchedulerStore:
             created_at=str(row[6]),
             last_run=str(row[7]) if row[7] is not None else None,
             next_run=str(row[8]) if row[8] is not None else None,
+            owner_agent_id=str(row[9]) if row[9] is not None else "",
+            owner_session_id=str(row[10]) if row[10] is not None else "",
+            owner_project_id=str(row[11]) if row[11] is not None else "",
         )
 
     def count_jobs(self) -> int:

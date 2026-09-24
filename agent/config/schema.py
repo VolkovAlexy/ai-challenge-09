@@ -102,6 +102,12 @@ class Config(BaseModel):
     mcp_servers: dict[str, McpServer] = Field(
         default_factory=dict, description="MCP-серверы (имя → описание подключения)"
     )
+    watchdog: WatchdogConfig | None = Field(
+        default=None, description="Фоновый сторож (None — выключен)"
+    )
+    scheduler: SchedulerConfig | None = Field(
+        default=None, description="Планировщик: адрес доставки результатов (None — выключен)"
+    )
 
     @model_validator(mode="after")
     def _default_model_exists(self) -> Config:
@@ -171,6 +177,40 @@ def validate_config(data: Any) -> Config:
     except ValidationError as exc:
         lines = [_format_error(error) for error in exc.errors()]
         raise ValueError("невалидный config:\n" + "\n".join(lines)) from exc
+
+
+class SchedulerConfig(BaseModel):
+    """Параметры интеграции с планировщиком (mcp_scheduler).
+
+    `notify_url` — адрес `POST /api/scheduler/notify` web-сервера, куда
+    планировщик шлёт уведомления `job_added`/`job_ran`/`job_removed` для
+    доставки результатов в сессию создателя. None — интеграция выключена.
+    """
+
+    notify_url: str = Field(
+        default="http://127.0.0.1:8321/api/scheduler/notify",
+        description="Адрес приёмника уведомлений планировщика",
+    )
+
+
+class WatchdogConfig(BaseModel):
+    """Параметры фонового «сторожа»: периодический запуск хода агента.
+
+    Каждый период сторож шлёт `prompt` выбранному агенту через `start_ask`
+    (24/7-сценарий: агент сам по расписанию формирует сводку/данные). Если агент
+    уже отвечает — тик пропускается. Управляется полем `enabled`.
+    """
+
+    enabled: bool = Field(default=True, description="Включён ли сторож")
+    agent_id: str | None = Field(
+        default=None, description="id агента; None — активный агент"
+    )
+    interval_seconds: float = Field(
+        default=3600.0,
+        gt=0,
+        description="Период между срабатываниями (секунды)",
+    )
+    prompt: str = Field(description="Промпт, отправляемый агенту при срабатывании")
 
 
 class AgentSettings(BaseModel):

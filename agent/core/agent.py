@@ -137,11 +137,15 @@ class Agent:
         project_id: str = "",
         active_profile_id: str = "",
         with_task_tools: bool = True,
+        agent_id: str = "",
+        session_id: str = "",
     ) -> None:
         self.name = name
         self.settings = settings
         self.system_prompt = system_prompt
         self.project_id = project_id
+        self.agent_id = agent_id
+        self.session_id = session_id
         self.active_profile_id = active_profile_id  # профиль роли чата ("" — без него)
         self.profile_content = ""  # текст активного профиля (подтягивается из store)
         self.memory = InMemorySession()
@@ -611,7 +615,12 @@ class Agent:
             output = f"инструмент '{call.function.name}' не найден"
         else:
             ctx = ToolContext(
-                session=self.memory, agent=self, project_id=self.project_id, run_id=uuid4().hex
+                session=self.memory,
+                agent=self,
+                project_id=self.project_id,
+                run_id=uuid4().hex,
+                agent_id=self.agent_id,
+                session_id=self.session_id,
             )
             try:
                 arguments = parse_tool_arguments(call.function.arguments)

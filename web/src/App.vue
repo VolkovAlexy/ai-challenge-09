@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   NConfigProvider,
   NMessageProvider,
@@ -122,6 +122,20 @@ async function boot(): Promise<void> {
 
 onMounted(boot);
 
+/** Поллинг истории активного агента: подтягиваем уведомления планировщика в открытый чат. */
+const HISTORY_POLL_MS = 15000;
+let historyPoll: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  historyPoll = setInterval(() => {
+    const id = agentsStore.activeAgentId;
+    if (id === null) return;
+    void agentsStore.pollHistory(id);
+  }, HISTORY_POLL_MS);
+});
+onUnmounted(() => {
+  if (historyPoll !== null) clearInterval(historyPoll);
+});
+
 function cmdContext(): CommandContext {
   return {
     requests: {
@@ -232,7 +246,10 @@ function onProfileChange(profileId: string): void {
 
 function onSessionSelect(sessionId: string): void {
   const id = agentsStore.activeAgentId;
-  if (id !== null) void agentsStore.loadSession(id, sessionId);
+  if (id !== null) {
+    void agentsStore.loadSession(id, sessionId);
+    void api.markSessionRead(sessionId).then(() => sessionsStore.loadAll());
+  }
 }
 
 async function onSessionBranch(sessionId: string): Promise<void> {

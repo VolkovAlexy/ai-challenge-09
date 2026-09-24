@@ -182,10 +182,27 @@ export const useAgentsStore = defineStore("agents", () => {
     await Promise.all(dtos.map((d) => loadHistory(d.id)));
   }
 
+  /** Длина последней загруженной серверной истории (без локальных эфемерных сообщений). */
+  const serverLen: Record<AgentId, number> = {};
+
   async function loadHistory(id: AgentId): Promise<void> {
     const state = agents.value[id];
     if (state === undefined) return;
-    state.history = (await api.getMessages(id)).filter((m) => !isAutopilotMessage(m));
+    const msgs = (await api.getMessages(id)).filter((m) => !isAutopilotMessage(m));
+    serverLen[id] = msgs.length;
+    state.history = msgs;
+  }
+
+  /** Подтягивает новые сообщения в открытый чат (например уведомление планировщика),
+   *  не трогая историю, если новых серверных сообщений нет. Во время стрима — no-op. */
+  async function pollHistory(id: AgentId): Promise<void> {
+    const state = agents.value[id];
+    if (state === undefined || state.streaming) return;
+    const msgs = (await api.getMessages(id)).filter((m) => !isAutopilotMessage(m));
+    if (msgs.length > (serverLen[id] ?? 0)) {
+      serverLen[id] = msgs.length;
+      state.history = msgs;
+    }
   }
 
   async function createAgent(name?: string, projectId?: string): Promise<AgentState> {
@@ -431,6 +448,7 @@ export const useAgentsStore = defineStore("agents", () => {
     activeAgent,
     loadAll,
     loadHistory,
+    pollHistory,
     createAgent,
     closeAgent,
     patchAgent,

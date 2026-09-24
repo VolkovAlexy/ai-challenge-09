@@ -4,6 +4,8 @@ import asyncio
 import json
 from pathlib import Path
 
+import httpx
+
 from mcp_scheduler.scheduler import Scheduler
 from mcp_scheduler.server import SchedulerService, make_server
 from mcp_scheduler.store import SchedulerStore
@@ -77,6 +79,17 @@ async def test_make_server_lists_schedule_tools() -> None:
     ]
 
 
+def test_schedule_add_interval_once_sets_next_run() -> None:
+    svc = make_service()
+    added = json.loads(
+        svc.schedule_add(
+            "reminder", "r", {"type": "interval", "seconds": 300, "repeat": False}, {"m": "x"}
+        )
+    )
+    assert added["trigger"]["repeat"] is False
+    assert added["next_run"] is not None
+
+
 async def test_make_server_call_schedule_add_round_trip() -> None:
     server = make_server(":memory:")
     result = await server.call_tool(
@@ -96,3 +109,47 @@ def _tool_text(result: object) -> str:
     content = getattr(result, "content", None)
     parts = [c.text for c in content if getattr(c, "type", "") == "text"]
     return "\n".join(parts)
+
+
+def test_schedule_add_stores_owner() -> None:
+    svc = make_service()
+    added = json.loads(
+        svc.schedule_add(
+            "collect",
+            "c",
+            {"type": "interval", "seconds": 60},
+            owner_agent_id="a1",
+            owner_session_id="s1",
+            owner_project_id="p1",
+        )
+    )
+    assert added["owner_agent_id"] == "a1"
+    assert added["owner_session_id"] == "s1"
+    assert added["owner_project_id"] == "p1"
+
+
+async def test_job_ran_notify_posts_webhook() -> None:
+    from unittest.mock import patch
+
+    store = SchedulerStore(Path(":memory:"))
+    sched = Scheduler(store, tick=3600, notify_url="http://x/notify")
+    store.add_job(
+        "reminder", "r", {"type": "at", "at": "2026-09-25T00:00:00Z"}, {"message": "напомни"}
+    )
+
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    with patch("mcp_scheduler.scheduler.httpx.AsyncClient", return_value=client):
+        await sched.run_now("r")
+
+    assert len(captured) == 1
+    payload = json.loads(captured[0].content)
+    assert payload["event"] == "job_ran"
+    assert payload["job"]["name"] == "r"
+    assert payload["summary"]["note"] == "напомни"

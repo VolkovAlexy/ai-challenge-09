@@ -34,6 +34,7 @@ from agent.web_server.state import (
     WebState,
 )
 from agent.web_server.stream import agent_stream
+from agent.web_server.watchdog import watchdog_loop
 
 AUTOSAVE_INTERVAL = 2.0
 SESSIONS_DIR = Path("sessions")
@@ -57,6 +58,12 @@ def create_app(state: WebState) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tick = asyncio.create_task(_autosave_loop(state, AUTOSAVE_INTERVAL))
         probe = asyncio.create_task(state.start_mcp())
+        watchdog: asyncio.Task[None] | None = None
+        if state.config.watchdog is not None and state.config.watchdog.enabled:
+            watchdog = asyncio.create_task(
+                watchdog_loop(state, state.config.watchdog),
+                name="watchdog",
+            )
         try:
             yield
         finally:
@@ -66,6 +73,10 @@ def create_app(state: WebState) -> FastAPI:
             probe.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await probe
+            if watchdog is not None:
+                watchdog.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watchdog
             if state.mcp is not None:
                 await state.mcp.stop()
             await state.llm.close()
@@ -261,6 +272,16 @@ def create_app(state: WebState) -> FastAPI:
     def patch_session(session_id: str, body: dto.SessionPatchRequest) -> dict[str, bool]:
         if not state.store.set_title(session_id, body.title):
             raise HTTPException(status_code=404, detail="сессия не найдена")
+        return {"ok": True}
+
+    @app.post("/api/scheduler/notify")
+    def scheduler_notify(body: dto.SchedulerEventRequest) -> dict[str, bool]:
+        state.handle_scheduler_event(body)
+        return {"ok": True}
+
+    @app.post("/api/scheduler/mark-read")
+    def scheduler_mark_read(session_id: str) -> dict[str, bool]:
+        state.mark_session_read(session_id)
         return {"ok": True}
 
     # --- управление ходом ---

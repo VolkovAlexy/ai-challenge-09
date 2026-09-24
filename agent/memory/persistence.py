@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS messages (
     message_json TEXT NOT NULL,
     PRIMARY KEY (session_id, seq)
 );
+CREATE TABLE IF NOT EXISTS session_schedule (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    scheduled_count INTEGER NOT NULL DEFAULT 0,
+    unread INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -99,6 +104,8 @@ class SessionInfo:
     model: str | None = None
     message_count: int | None = None
     project_id: str = ""
+    has_scheduled: bool = False
+    unread_notifications: int = 0
 
 
 @dataclass
@@ -281,9 +288,12 @@ class SessionStore:
                        json_extract(s.settings_json, '$.model') AS model,
                        s.updated_at,
                        (SELECT COUNT(*) FROM messages WHERE session_id = s.id) AS msg_cnt,
-                       s.project_id
+                       s.project_id,
+                       COALESCE(sc.scheduled_count, 0) AS sched_cnt,
+                       COALESCE(sc.unread, 0) AS unread
                 FROM sessions s
                 JOIN messages m ON m.session_id = s.id
+                LEFT JOIN session_schedule sc ON sc.session_id = s.id
                 {where}
                 GROUP BY s.id
                 ORDER BY s.updated_at DESC
@@ -299,6 +309,8 @@ class SessionStore:
                 updated_at=r[3],
                 message_count=int(r[4]) if r[4] is not None else None,
                 project_id=r[5] or "",
+                has_scheduled=int(r[6] or 0) > 0,
+                unread_notifications=int(r[7] or 0),
             )
             for r in rows
         ]
@@ -379,6 +391,95 @@ class SessionStore:
                 "SELECT project_id FROM sessions WHERE id = ?", (session_id,)
             ).fetchone()
         return row[0] or "" if row else ""
+
+    # --- планировщик: флаги сессии (иконка ⏰ и badge непрочитанного) ---
+
+    def incr_scheduled(self, session_id: str) -> None:
+        """Добавляет активное задание планировщика к сессии (счётчик)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO session_schedule (session_id, scheduled_count, unread)
+                VALUES (?, 1, 0)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    scheduled_count = session_schedule.scheduled_count + 1
+                """,
+                (session_id,),
+            )
+
+    def decr_scheduled(self, session_id: str) -> None:
+        """Убирает одно активное задание планировщика от сессии (счётчик)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO session_schedule (session_id, scheduled_count, unread)
+                VALUES (?, 0, 0)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    scheduled_count = max(session_schedule.scheduled_count - 1, 0)
+                """,
+                (session_id,),
+            )
+
+    def incr_unread(self, session_id: str, delta: int = 1) -> None:
+        """Увеличивает счётчик непрочитанных результатов задания для сессии."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO session_schedule (session_id, scheduled_count, unread)
+                VALUES (?, 0, ?)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    unread = session_schedule.unread + ?
+                """,
+                (session_id, delta, delta),
+            )
+
+    def clear_unread(self, session_id: str) -> None:
+        """Сбрасывает счётчик непрочитанных результатов (сессия открыта)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE session_schedule SET unread = 0 WHERE session_id = ?",
+                (session_id,),
+            )
+
+    def unread_count(self, session_id: str) -> int:
+        """Число непрочитанных результатов задания (для badge)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT unread FROM session_schedule WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def append_notification(self, session_id: str, message_json: str) -> bool:
+        """Дописывает результат задания в историю закрытой сессии.
+
+        Используется, когда сессия не загружена (нет live-агента): сообщение
+        ложится в `messages` с `seq = max+1`, чтобы при открытии сессии оно
+        было видно. Возвращает True, если сессия существует и запись добавлена.
+        """
+        with self._lock, self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if exists is None:
+                return False
+            seq = self._conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) + 1 FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            self._conn.execute(
+                "INSERT INTO messages (session_id, seq, message_json) VALUES (?, ?, ?)",
+                (session_id, seq, message_json),
+            )
+            self._conn.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?", (_now(), session_id)
+            )
+            self._conn.execute(
+                "INSERT INTO session_schedule (session_id, scheduled_count, unread)"
+                " VALUES (?, 0, 0) ON CONFLICT (session_id) DO NOTHING",
+                (session_id,),
+            )
+        return True
 
     def create_project(self, name: str) -> ProjectInfo:
         """Создаёт проект. Имя схлопывается в одну строку; пустое — ValueError."""
