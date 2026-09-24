@@ -410,6 +410,9 @@ class WebState:
                 top_p=settings.top_p,
                 max_tokens=settings.max_tokens,
                 stop=list(settings.stop),
+                context_strategy=settings.context_strategy,
+                sliding_window=settings.sliding_window,
+                compaction_threshold=settings.compaction_threshold,
             ),
             system_prompt=SystemPromptDTO(
                 path=record.system_prompt_path,

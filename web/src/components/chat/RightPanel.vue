@@ -9,6 +9,7 @@ import { useAgentsStore } from "@/stores/agents";
 import McpPanel from "./McpPanel.vue";
 import MemoryPanel from "./MemoryPanel.vue";
 import ProfilePanel from "./ProfilePanel.vue";
+import SettingsPanel from "./SettingsPanel.vue";
 import TaskPanel from "./TaskPanel.vue";
 
 type Tab = "task" | "memory" | "profiles" | "mcp" | "settings" | null;
@@ -114,7 +115,7 @@ const rpTitle = computed(() => (activeTab.value === null ? "" : TITLES[activeTab
               <MemoryPanel v-else-if="activeTab === 'memory'" :active="true" />
               <ProfilePanel v-else-if="activeTab === 'profiles'" :active="true" />
               <McpPanel v-else-if="activeTab === 'mcp'" :active="true" />
-              <div v-else class="rp-placeholder">Настройки — следующая итерация</div>
+              <SettingsPanel v-else :active="true" />
             </div>
           </n-scrollbar>
         </div>

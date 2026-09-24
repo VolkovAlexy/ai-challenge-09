@@ -6,9 +6,8 @@ import { buildRegistry } from "@/commands/registry";
 import type { CommandDTO } from "@/api/types";
 
 const dtos: CommandDTO[] = [
-  { name: "help", description: "список команд", args_spec: "" },
-  { name: "temperature", description: "temperature", args_spec: "<0..2>" },
-  { name: "model", description: "палитра выбора модели", args_spec: "[provider:model]" },
+  { name: "close", description: "закрыть агента", args_spec: "" },
+  { name: "export", description: "экспорт сессии", args_spec: "[file]" },
 ];
 
 beforeEach(() => {
@@ -42,40 +41,26 @@ function mountInput(streaming = false) {
 describe("ChatInput", () => {
   it("slash-меню открывается по / и фильтруется", async () => {
     const w = mountInput();
-    await w.find("textarea").setValue("/te");
+    await w.find("textarea").setValue("/cl");
     const items = w.findAll(".slash-item");
     expect(items.length).toBe(1);
-    expect(items[0].text()).toContain("/temperature");
+    expect(items[0].text()).toContain("/close");
   });
 
   it("навигация ↑↓ / Enter — выбор из меню", async () => {
     const w = mountInput();
-    await w.find("textarea").setValue("/te");
+    await w.find("textarea").setValue("/cl");
     await w.find("textarea").trigger("keydown", { key: "Enter" });
-    expect(w.find("textarea").element.value).toBe("/temperature ");
+    expect(w.find("textarea").element.value).toBe("/close ");
   });
 
   it("Esc закрывает меню (стрим выключен — стоп не эмитится)", async () => {
     const w = mountInput(false);
-    await w.find("textarea").setValue("/te");
+    await w.find("textarea").setValue("/cl");
     expect(w.find(".slash-menu").exists()).toBe(true);
     await w.find("textarea").trigger("keydown", { key: "Escape" });
     // streaming=false -> stop не эмитится
     expect(w.emitted("stop")).toBeUndefined();
-  });
-
-  it("Tab-дополнение команды", async () => {
-    const w = mountInput();
-    await w.find("textarea").setValue("/te");
-    await w.find("textarea").trigger("keydown", { key: "Tab" });
-    expect(w.find("textarea").element.value).toBe("/temperature ");
-  });
-
-  it("Tab-дополнение модели для /model", async () => {
-    const w = mountInput();
-    await w.find("textarea").setValue("/model ollama");
-    await w.find("textarea").trigger("keydown", { key: "Tab" });
-    expect(w.find("textarea").element.value).toBe("/model ollama:llama3.1 ");
   });
 
   it("Enter без меню отправляет текст; пустой ввод игнорируется", async () => {

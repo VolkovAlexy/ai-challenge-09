@@ -183,6 +183,12 @@ class AgentSettings(BaseModel):
     stop: list[str] = Field(default_factory=list)
     context_strategy: ContextStrategy = Field(default="summary")
     sliding_window: int = Field(default=20, gt=0)
+    compaction_threshold: float = Field(
+        default=0.6,
+        ge=0.5,
+        le=1.0,
+        description="Доля заполнения окна, при которой история сжимается в саммари",
+    )
 
     @classmethod
     def from_config(cls, config: Config) -> AgentSettings:
@@ -195,4 +201,5 @@ class AgentSettings(BaseModel):
             stop=list(config.stop),
             context_strategy=config.context_strategy,
             sliding_window=config.sliding_window,
+            compaction_threshold=config.compaction_threshold,
         )

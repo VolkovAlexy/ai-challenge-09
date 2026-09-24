@@ -24,7 +24,7 @@ function agentState(overrides: Partial<AgentState> = {}): AgentState {
     id: "a1",
     name: "chat-1",
     model: "ollama:llama3.1",
-    settings: { temperature: 0.7, top_p: 1, max_tokens: 4096, stop: [] },
+    settings: { temperature: 0.7, top_p: 1, max_tokens: 4096, stop: [], context_strategy: "summary", sliding_window: 256, compaction_threshold: 0.6 },
     systemPromptPath: "SYSTEM_PROMPT.md",
     systemPromptContent: "ты",
     history: [],

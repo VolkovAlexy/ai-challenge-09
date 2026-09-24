@@ -21,6 +21,9 @@ export interface AgentSettingsState {
   top_p: number;
   max_tokens: number;
   stop: string[];
+  context_strategy: "none" | "summary" | "sliding" | "facts";
+  sliding_window: number;
+  compaction_threshold: number;
 }
 
 /** Живой блок работы субагента (delegate): копится до subagent_done. */

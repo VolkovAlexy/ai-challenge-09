@@ -110,7 +110,7 @@ defineExpose({ scrollDown });
 <template>
   <div class="msglist" ref="container" @scroll.passive="onScroll">
     <div v-if="!agent || history.length === 0" class="msglist-empty">
-      История пуста — напишите что-нибудь или введите /help
+      История пуста — напишите что-нибудь, чтобы начать
     </div>
     <template v-for="item in timeline" :key="item.kind === 'msg' ? `m-${item.msg.id}-${item.idx}` : `s-${item.block.profile}-${item.si}`">
       <template v-if="item.kind === 'msg'">

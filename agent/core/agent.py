@@ -255,8 +255,8 @@ class Agent:
 
     @property
     def compaction_threshold(self) -> float:
-        """Доля заполнения окна, при которой сжимается история (из config)."""
-        return self._config.compaction_threshold
+        """Доля заполнения окна, при которой сжимается история."""
+        return self.settings.compaction_threshold
 
     @property
     def context_now(self) -> tuple[int, bool]:
@@ -468,7 +468,7 @@ class Agent:
                         if self._finish_reason == "length":
                             raise LLMError(
                                 "модель исчерпала max_tokens на размышления и не начала ответ — "
-                                "увеличьте лимит: /max-tokens <n>"
+                                "увеличьте лимит max_tokens в настройках агента"
                             )
                         raise LLMError(
                             f"модель вернула пустой ответ (finish_reason: {self._finish_reason})"
@@ -719,7 +719,7 @@ class Agent:
             self._needs_compaction = False
             return
         window = self.context_window
-        threshold = self._config.compaction_threshold
+        threshold = self.settings.compaction_threshold
         share = self._projected_tokens() / window if window > 0 else 1.0
         if share < threshold and not self._needs_compaction:
             return
