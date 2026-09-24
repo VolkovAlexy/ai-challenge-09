@@ -225,6 +225,7 @@ __marimo__/
 # секретные/локальные настройки
 config.json
 sessions/
+project_log/
 
 # node (web)
 node_modules/
