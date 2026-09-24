@@ -142,6 +142,13 @@ export const api = {
   forkAt: (id: string, messageIndex: number) =>
     request<ForkResponseDTO>("POST", `/agents/${id}/fork`, { message_index: messageIndex }),
 
+  /** Получить факты (стратегия facts): ключ-значение память диалога. */
+  getFacts: (id: string) => request<Record<string, string>>("GET", `/agents/${id}/facts`),
+
+  /** Полностью заменить facts-блок агента. */
+  putFacts: (id: string, facts: Record<string, string>) =>
+    request<Record<string, string>>("PUT", `/agents/${id}/facts`, { facts }),
+
   /** Долговременная память проекта: содержимое + записи. */
   getLongterm: (projectId?: string) =>
     request<LongTermDTO>("GET", `/longterm${query(projectId)}`),

@@ -9,7 +9,10 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+ContextStrategyValue = Literal["none", "summary", "sliding", "facts"]
+"""Допустимые стратегии контекста агента (зеркало config.schema.ContextStrategy)."""
 
 
 class UsageDTO(BaseModel):
@@ -38,12 +41,15 @@ class MessageDTO(BaseModel):
 
 
 class AgentSettingsDTO(BaseModel):
-    """Настройки генерации агента (без стратегии контекста — её фронт не знает)."""
+    """Настройки генерации агента (для панели «Настройки»)."""
 
     temperature: float
     top_p: float
     max_tokens: int
     stop: list[str]
+    context_strategy: ContextStrategyValue
+    sliding_window: int
+    compaction_threshold: float
 
 
 class SystemPromptDTO(BaseModel):
@@ -200,6 +206,15 @@ class PatchAgentRequest(BaseModel):
     stop: list[str] | None = None
     system_prompt_path: str | None = None
     active_profile_id: str | None = None
+    context_strategy: ContextStrategyValue | None = None
+    sliding_window: int | None = None
+    compaction_threshold: float | None = Field(default=None, ge=0.5, le=1.0)
+
+
+class FactsPutRequest(BaseModel):
+    """Полная замена facts-блока (ключ-значение) агента."""
+
+    facts: dict[str, str]
 
 
 class ProfileRequest(BaseModel):

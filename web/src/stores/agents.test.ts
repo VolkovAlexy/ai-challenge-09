@@ -11,7 +11,7 @@ function agentDTO(overrides: Partial<AgentDTO> = {}): AgentDTO {
     id: `a${nextId}`,
     name: `chat-${nextId}`,
     model: "ollama:m1",
-    settings: { temperature: 0.7, top_p: 1, max_tokens: 100, stop: [] },
+    settings: { temperature: 0.7, top_p: 1, max_tokens: 100, stop: [], context_strategy: "summary", sliding_window: 256, compaction_threshold: 0.6 },
     system_prompt: { path: "SYSTEM_PROMPT.md", content: "ты" },
     context_used: 10,
     context_window: 1000,

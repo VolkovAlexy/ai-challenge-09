@@ -642,23 +642,6 @@ def test_request_compaction_forces_below_threshold() -> None:
     assert agent.compaction_note is not None
 
 
-def test_compact_command_sets_flag() -> None:
-    from agent.commands.registry import CommandContext, default_registry
-
-    registry = default_registry()
-    agent, _ = make_agent([ChatChunk(content="ok")])
-    agent.memory.add(Message(role=Role.USER, content="hi"))
-    ctx = CommandContext(app=None, agent=agent)  # type: ignore[arg-type]
-    assert registry.run(ctx, "/compact") is not None
-    assert agent._needs_compaction is True
-    # пустая история — сжимать нечего
-    agent2, _ = make_agent([ChatChunk(content="ok")])
-    ctx2 = CommandContext(app=None, agent=agent2)  # type: ignore[arg-type]
-    out = registry.run(ctx2, "/compact")
-    assert out is not None and "нечего" in out
-    assert agent2._needs_compaction is False
-
-
 # --- хранение саммари ---
 
 

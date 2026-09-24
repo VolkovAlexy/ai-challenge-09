@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { NInput, NButton, NSelect } from "naive-ui";
-import { completeInput } from "@/commands/registry";
 import type { ChatCommand } from "@/commands/registry";
 
 const props = defineProps<{
@@ -69,22 +68,6 @@ function applyVariant(variant: string): void {
 function onKeydown(ev: KeyboardEvent): void {
   if (ev.key === "Enter") {
     onEnter(ev);
-    return;
-  }
-  if (ev.key === "Tab") {
-    const variants = completeInput(
-      props.commands,
-      {
-        modelIds: props.modelIds,
-        profileOptions: () => props.profileOptions.map((o) => ({ id: o.value, name: o.label })),
-      },
-      text.value,
-    );
-    if (variants.length > 0) {
-      ev.preventDefault();
-      text.value = `${variants[menuIndex.value % variants.length]} `;
-      menuIndex.value += 1;
-    }
     return;
   }
   if (ev.key === "ArrowDown" && menuOpen.value) {

@@ -3,6 +3,8 @@
 
 export type Role = "user" | "assistant" | "system" | "tool";
 
+export type ContextStrategy = "none" | "summary" | "sliding" | "facts";
+
 export interface UsageDTO {
   prompt_tokens?: number;
   completion_tokens?: number;
@@ -32,6 +34,9 @@ export interface AgentSettingsDTO {
   top_p: number;
   max_tokens: number;
   stop: string[];
+  context_strategy: ContextStrategy;
+  sliding_window: number;
+  compaction_threshold: number;
 }
 
 export type TaskPhase = "idle" | "planning" | "execution" | "validation" | "done";
@@ -157,6 +162,9 @@ export interface PatchAgentDTO {
   stop?: string[];
   system_prompt_path?: string;
   active_profile_id?: string;
+  context_strategy?: ContextStrategy;
+  sliding_window?: number;
+  compaction_threshold?: number;
 }
 
 export type TaskCommandOperation =

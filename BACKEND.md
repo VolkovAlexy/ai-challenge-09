@@ -114,8 +114,9 @@
 ## 4. DTO-соответствия (сверить с фронтендом `web/src/api/types.ts`)
 
 - `AgentDTO`: `{id, name, model, settings:{temperature, top_p, max_tokens,
-  stop}, system_prompt:{path, content}, context_used, context_window,
-  streaming, compacting}`.
+  stop, context_strategy, sliding_window, compaction_threshold},
+  system_prompt:{path, content}, context_used, context_window, streaming,
+  compacting}`.
   - `context_used` — `agent.context_now[0]` (property, кортеж `(токены, оценка)`);
   - `context_window` — `agent.context_window`;
   - `compacting` — `agent.is_compacting or agent.is_extracting_facts`;
@@ -138,7 +139,7 @@
 `tests/`); стрим подменяется фейковым `LLMClient`. Обязательные кейсы:
 
 - `GET /api/config` — 200, без `api_key` (строка «api_key» не встречается в теле);
-- `GET /api/commands` — список содержит `help`, `model`, `session`;
+- `GET /api/commands` — список содержит `close`, `export`;
 - `POST /api/agents` → 200 AgentDTO; `PATCH` неизвестной модели → 400;
   `DELETE` несуществующего → 404; повторный `POST messages` во время стрима → 409;
 - SSE: дельты склеиваются в `done.message.content == текст ответа мока`;

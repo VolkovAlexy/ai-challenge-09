@@ -175,6 +175,12 @@ def create_app(state: WebState) -> FastAPI:
             agent.settings.max_tokens = body.max_tokens
         if body.stop is not None:
             agent.settings.stop = list(body.stop)
+        if body.context_strategy is not None:
+            agent.settings.context_strategy = body.context_strategy
+        if body.sliding_window is not None:
+            agent.settings.sliding_window = body.sliding_window
+        if body.compaction_threshold is not None:
+            agent.settings.compaction_threshold = body.compaction_threshold
         if body.system_prompt_path is not None:
             try:
                 agent.set_system_prompt_file(body.system_prompt_path)
@@ -285,6 +291,20 @@ def create_app(state: WebState) -> FastAPI:
         record.agent.memory.scratchpad = body.content
         state.persist(record)
         return {"content": record.agent.memory.scratchpad}
+
+    # --- facts (стратегия фактов) ---
+
+    @app.get("/api/agents/{agent_id}/facts")
+    def get_facts(agent_id: str) -> dict[str, str]:
+        record = _record_or_404(agent_id)
+        return dict(record.agent.memory.facts)
+
+    @app.put("/api/agents/{agent_id}/facts")
+    def put_facts(agent_id: str, body: dto.FactsPutRequest) -> dict[str, str]:
+        record = _record_or_404(agent_id)
+        record.agent.memory.facts = dict(body.facts)
+        state.persist(record)
+        return dict(record.agent.memory.facts)
 
     # --- состояние задачи (конечный автомат) ---
 

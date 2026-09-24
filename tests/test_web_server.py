@@ -134,9 +134,68 @@ async def test_commands_contains() -> None:
         resp = await client.get("/api/commands")
         assert resp.status_code == 200
         names = [c["name"] for c in resp.json()]
-        assert "help" in names
-        assert "model" in names
-        assert "session" in names
+        assert "close" in names
+        assert "export" in names
+        assert "help" not in names
+        assert "model" not in names
+        assert "session" not in names
+
+
+async def test_patch_context_settings() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        rid = body["id"]
+        resp = await client.patch(
+            f"/api/agents/{rid}",
+            json={
+                "context_strategy": "sliding",
+                "sliding_window": 12,
+                "temperature": 0.3,
+                "compaction_threshold": 0.7,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        settings = resp.json()["settings"]
+        assert settings["context_strategy"] == "sliding"
+        assert settings["sliding_window"] == 12
+        assert settings["temperature"] == 0.3
+        assert settings["compaction_threshold"] == 0.7
+
+
+async def test_patch_compaction_threshold_invalid() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        for value in (0.4, 1.1):
+            resp = await client.patch(
+                f"/api/agents/{body['id']}",
+                json={"context_strategy": "summary", "compaction_threshold": value},
+            )
+            assert resp.status_code >= 400, resp.text
+
+
+async def test_patch_context_strategy_invalid() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        resp = await client.patch(
+            f"/api/agents/{body['id']}", json={"context_strategy": "bogus"}
+        )
+        assert resp.status_code >= 400
+
+
+async def test_facts_roundtrip() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        rid = body["id"]
+        put = await client.put(f"/api/agents/{rid}/facts", json={"facts": {"a": "b"}})
+        assert put.status_code == 200, put.text
+        assert put.json() == {"a": "b"}
+        get = await client.get(f"/api/agents/{rid}/facts")
+        assert get.status_code == 200
+        assert get.json() == {"a": "b"}
 
 
 async def test_create_agent_returns_dto() -> None:
