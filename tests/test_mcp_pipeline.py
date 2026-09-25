@@ -107,12 +107,11 @@ async def test_pipeline_stops_on_unknown_tool() -> None:
     assert "ghost" in results[0].output
 
 
-def _spec() -> McpServer:
-    return McpServer(
-        transport="stdio",
-        command=sys.executable,
-        args=["-m", "mcp_pipeline.server", "--no-llm"],
-    )
+def _spec(base: Path | None = None) -> McpServer:
+    args = ["-m", "mcp_pipeline.server", "--no-llm"]
+    if base is not None:
+        args += ["--base", str(base)]
+    return McpServer(transport="stdio", command=sys.executable, args=args)
 
 
 def _init_repo(repo: Path) -> None:
@@ -127,7 +126,14 @@ async def test_mcp_server_exposes_tools() -> None:
     try:
         tools = await adapter.list_tools()
         names = {t["name"] for t in tools}
-        assert names == {"review_changes", "summarize", "saveToFile", "run_pipeline"}
+        assert names == {
+            "review_changes",
+            "summarize",
+            "saveToFile",
+            "run_pipeline",
+            "readFile",
+            "writeFile",
+        }
     finally:
         await adapter.close()
 
@@ -145,9 +151,9 @@ async def test_pipeline_end_to_end_via_mcp(tmp_path: Path) -> None:
     logdir.mkdir()
 
     adapter = McpAdapter("pipeline")
-    await adapter.connect(_spec())
+    await adapter.connect(_spec(base=tmp_path))
     try:
-        assert await adapter.sync_tools(ToolRegistry()) == 4
+        assert await adapter.sync_tools(ToolRegistry()) == 6
         result = await adapter.call_tool(
             "run_pipeline",
             {
@@ -181,7 +187,7 @@ async def test_pipeline_end_to_end_via_mcp(tmp_path: Path) -> None:
 
 async def test_save_to_file_creates_timestamped_md(tmp_path: Path) -> None:
     adapter = McpAdapter("pipeline")
-    await adapter.connect(_spec())
+    await adapter.connect(_spec(base=tmp_path))
     try:
         result = await adapter.call_tool(
             "saveToFile",
@@ -193,5 +199,44 @@ async def test_save_to_file_creates_timestamped_md(tmp_path: Path) -> None:
         assert len(saved_files) == 1
         assert saved_files[0].stem.startswith("20")  # имя = дата/время создания
         assert saved_files[0].read_text(encoding="utf-8") == "сводка изменений"
+    finally:
+        await adapter.close()
+
+
+async def test_read_file_in_sandbox(tmp_path: Path) -> None:
+    adapter = McpAdapter("pipeline")
+    await adapter.connect(_spec(base=tmp_path))
+    try:
+        (tmp_path / "data.md").write_text("содержимое", encoding="utf-8")
+        read = await adapter.call_tool("readFile", {"path": "data.md"})
+        assert not read.is_error, read.output
+        assert read.output == "содержимое"
+
+        escape = await adapter.call_tool("readFile", {"path": "../escape.md"})
+        assert not escape.is_error, escape.output
+        assert "вне базового каталога" in escape.output
+
+        missing = await adapter.call_tool("readFile", {"path": "missing.md"})
+        assert not missing.is_error, missing.output
+        assert "не найден" in missing.output
+    finally:
+        await adapter.close()
+
+
+async def test_write_file_creates_custom_path(tmp_path: Path) -> None:
+    adapter = McpAdapter("pipeline")
+    await adapter.connect(_spec(base=tmp_path))
+    try:
+        write = await adapter.call_tool(
+            "writeFile", {"path": "notes/todo.md", "content": "заметка"}
+        )
+        assert not write.is_error, write.output
+        assert "Записано" in write.output
+        assert (tmp_path / "notes" / "todo.md").read_text(encoding="utf-8") == "заметка"
+
+        escape = await adapter.call_tool("writeFile", {"path": "../escape.md", "content": "x"})
+        assert not escape.is_error, escape.output
+        assert "вне базового каталога" in escape.output
+        assert not (tmp_path.parent / "escape.md").exists()
     finally:
         await adapter.close()

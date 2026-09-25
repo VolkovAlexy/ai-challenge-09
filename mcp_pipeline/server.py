@@ -43,8 +43,18 @@ DEFAULT_CONFIG = "config.json"
 PROJECT_LOG = "project_log"
 # Максимальная длина диффа в отчёте ревью (чтобы LLM-сводка не раздувалась).
 MAX_DIFF_CHARS = 6000
+# Максимальный размер файла при чтении (защита от раздувания контекста).
+MAX_READ_BYTES = 300_000
 
 _SENTENCE_RE = re.compile(r"[^.!?]+[.!?]*\s*")
+
+
+def _resolve_in(base: Path, raw: str) -> Path:
+    """Резолвит `raw` относительно `base`; выход за пределы `base` → ValueError."""
+    target = (base / raw).resolve()
+    if not target.is_relative_to(base):
+        raise ValueError(f"путь вне базового каталога: {raw}")
+    return target
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -53,12 +63,14 @@ def _split_sentences(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
-def make_server(config: Any = None, llm: Any = None) -> MCPServer:
+def make_server(config: Any = None, llm: Any = None, base_dir: Path | None = None) -> MCPServer:
     """Создаёт MCP-сервер `pipeline` с инструментами ревью/сжатия/сохранения.
 
     `config`/`llm` необязательны: их наличие включает LLM-сводку, иначе
     `summarize` сосредотачивается на extractive-срезе (передается в тестах).
+    `base_dir` задаёт песочницу файловых инструментов (по умолчанию CWD).
     """
+    sandbox = (base_dir or Path.cwd()).resolve()
 
     async def _git(base: Path, *args: str) -> tuple[int, str, str]:
         """Выполняет `git -C <base> <args>`; возвращает (код, stdout, stderr)."""
@@ -158,13 +170,39 @@ def make_server(config: Any = None, llm: Any = None) -> MCPServer:
         return " ".join(sentences[:max_sentences])
 
     async def _save(content: str, root: str | None = None) -> str:
-        """Сохраняет `content` в `root/<дата_время>.md` и возвращает подтверждение."""
-        base = Path(root or PROJECT_LOG).expanduser().resolve()
+        """Сохраняет `content` в `<root>/<дата_время>.md` внутри песочницы."""
+        try:
+            target = _resolve_in(sandbox, root if root is not None else PROJECT_LOG)
+        except ValueError as exc:
+            return f"Ошибка: {exc}"
+        target.mkdir(parents=True, exist_ok=True)
         name = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
-        base.mkdir(parents=True, exist_ok=True)
-        target = base / name
-        target.write_text(content, encoding="utf-8")
+        file = target / name
+        file.write_text(content, encoding="utf-8")
         return f"Сохранено {len(content)} символов в {name}"
+
+    async def _read(path: str) -> str:
+        """Читает текстовый файл из песочницы; ошибки возвращаются строкой."""
+        try:
+            target = _resolve_in(sandbox, path)
+        except ValueError as exc:
+            return f"Ошибка: {exc}"
+        if not target.is_file():
+            return f"Ошибка: файл не найден: {path}"
+        size = target.stat().st_size
+        if size > MAX_READ_BYTES:
+            return f"Ошибка: файл слишком большой ({size} байт; лимит {MAX_READ_BYTES})"
+        return target.read_text(encoding="utf-8", errors="replace")
+
+    async def _write(path: str, content: str) -> str:
+        """Записывает `content` в файл внутри песочницы, создавая родительские каталоги."""
+        try:
+            target = _resolve_in(sandbox, path)
+        except ValueError as exc:
+            return f"Ошибка: {exc}"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"Записано {len(content)} символов в {target.relative_to(sandbox)}"
 
     class _PipelineTool:
         """Обёртка внутренней реализации инструмента как `Tool` для `Pipeline`."""
@@ -236,6 +274,21 @@ def make_server(config: Any = None, llm: Any = None) -> MCPServer:
         return await _save(content, root)
 
     @server.tool()
+    async def readFile(
+        path: Annotated[str, Field(description="Путь к файлу (относительно базового каталога)")],
+    ) -> str:
+        """Читает текстовый файл внутри базового каталога и возвращает содержимое."""
+        return await _read(path)
+
+    @server.tool()
+    async def writeFile(
+        path: Annotated[str, Field(description="Путь для записи (относительно базового каталога)")],
+        content: Annotated[str, Field(description="Содержимое файла")],
+    ) -> str:
+        """Записывает `content` в указанный файл внутри базового каталога."""
+        return await _write(path, content)
+
+    @server.tool()
     async def run_pipeline(
         steps: Annotated[
             list[dict[str, Any]],
@@ -270,6 +323,12 @@ def make_server(config: Any = None, llm: Any = None) -> MCPServer:
                 "saveToFile", "Сохранение файла", {"type": "object", "properties": {}}, _save
             )
         )
+        registry.register(
+            _PipelineTool("readFile", "Чтение файла", {"type": "object", "properties": {}}, _read)
+        )
+        registry.register(
+            _PipelineTool("writeFile", "Запись файла", {"type": "object", "properties": {}}, _write)
+        )
         pipeline = Pipeline(registry)
         parsed = [
             PipelineStep(
@@ -286,9 +345,9 @@ def make_server(config: Any = None, llm: Any = None) -> MCPServer:
     return server
 
 
-def make_http_app(config: Any = None, llm: Any = None) -> Starlette:
+def make_http_app(config: Any = None, llm: Any = None, base_dir: Path | None = None) -> Starlette:
     """Streamable HTTP ASGI-приложение MCP-сервера `pipeline`."""
-    return make_server(config=config, llm=llm).streamable_http_app()
+    return make_server(config=config, llm=llm, base_dir=base_dir).streamable_http_app()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -301,6 +360,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--http", action="store_true", help="запустить Streamable HTTP")
     parser.add_argument("--port", type=int, default=DEFAULT_HTTP_PORT, help="HTTP-порт (--http)")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="путь к config.json")
+    parser.add_argument(
+        "--base", type=Path, default=None, help="базовый каталог песочницы (по умолчанию CWD)"
+    )
     parser.add_argument(
         "--no-llm", action="store_true", help="отключить LLM-сводку (extractive-срез)"
     )
@@ -316,9 +378,14 @@ def main(argv: list[str] | None = None) -> int:
         llm = LLMClient()
 
     if args.http:
-        uvicorn.run(make_http_app(config, llm), host="127.0.0.1", port=args.port, log_level="info")
+        uvicorn.run(
+            make_http_app(config, llm, args.base),
+            host="127.0.0.1",
+            port=args.port,
+            log_level="info",
+        )
         return 0
-    asyncio.run(make_server(config=config, llm=llm).run_stdio_async())
+    asyncio.run(make_server(config=config, llm=llm, base_dir=args.base).run_stdio_async())
     return 0
 
 

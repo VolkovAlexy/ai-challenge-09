@@ -30,9 +30,10 @@ class McpManager:
         self._specs = servers
         self._adapters: dict[str, McpAdapter] = {}
         self._server_registries: dict[str, ToolRegistry] = {}
-        self._status: dict[str, Literal["connecting", "available", "unavailable"]] = dict.fromkeys(
-            servers, "connecting"
-        )
+        self._status: dict[str, Literal["connecting", "available", "unavailable"]] = {
+            name: "connecting" if spec.enabled else "unavailable"
+            for name, spec in servers.items()
+        }
         self._enabled: dict[str, bool] = {name: spec.enabled for name, spec in servers.items()}
         self._lock = asyncio.Lock()
 
@@ -58,7 +59,7 @@ class McpManager:
     async def connect_all(self) -> None:
         """Пробинг всех серверов параллельно (вызывается фоново при старте)."""
         for name in self._specs:
-            self._status[name] = "connecting"
+            self._status[name] = "connecting" if self._enabled[name] else "unavailable"
         await asyncio.gather(*(self._probe(name) for name in self._specs if self._enabled[name]))
 
     async def probe(self, name: str) -> None:

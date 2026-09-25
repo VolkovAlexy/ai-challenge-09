@@ -95,6 +95,24 @@ async def test_set_enabled_toggles_tool_provider(spec: McpServer) -> None:
     await mgr.stop()
 
 
+async def test_disabled_server_is_togglable_and_not_stuck_connecting(spec: McpServer) -> None:
+    """Выключенный в конфиге сервер не должен зависнуть в 'connecting'.
+
+    Раньше connect_all() пропускал такой сервер, но статус оставался 'connecting',
+    а фронтенд блокировал тумблер при 'connecting' — включить было невозможно.
+    """
+    off = spec.model_copy(update={"enabled": False})
+    mgr = make_manager(off)
+    await mgr.connect_all()
+    dto = mgr.dto_list()[0]
+    assert dto.enabled is False
+    assert dto.status == "unavailable"  # не 'connecting': тумблер остаётся кликабельным
+    await mgr.set_enabled("demo", True)
+    assert mgr._status["demo"] == "available"
+    assert [t.name for t in mgr.enabled_tools()] == ["add"]
+    await mgr.stop()
+
+
 async def test_web_state_pushes_mcp_tools_into_agent(spec: McpServer) -> None:
     state = make_state(spec)
     await state.start_mcp()

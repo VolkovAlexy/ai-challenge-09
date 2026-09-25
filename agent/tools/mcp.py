@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from contextlib import AsyncExitStack
+import asyncio
+from contextlib import AsyncExitStack, suppress
 from typing import Any, Protocol
 
 from mcp import ClientSession, StdioServerParameters
@@ -73,18 +74,38 @@ class McpAdapter:
 
     def __init__(self, server_name: str) -> None:
         self.server_name = server_name
-        self._stack: AsyncExitStack | None = None
+        self._owner: asyncio.Task[None] | None = None
         self._session: ClientSession | None = None
         self._spec: McpServer | None = None
+        self._ready = asyncio.Event()
+        self._stop = asyncio.Event()
 
     @property
     def connected(self) -> bool:
         return self._session is not None
 
     async def connect(self, spec: McpServer) -> None:
-        """Подключиться по спецификации: `http` — streamable-http, иначе `stdio`."""
-        if self._session is not None:
+        """Подключиться по спецификации: `http` — streamable-http, иначе `stdio`.
+
+        Соединение живёт в собственном фоновом таске (`_run_connection`): контексты
+        `stdio_client`/`streamable_http_client` и `ClientSession` входят и выходят в
+        одном таске. Поэтому `close()` можно безопасно вызывать из любого таска —
+        это снимает «Attempted to exit cancel scope in a different task» при
+        закрытии соединения из `McpManager.stop()`.
+        """
+        if self._owner is not None:
             raise RuntimeError("соединение уже установлено")
+        self._ready.clear()
+        self._stop.clear()
+        owner = asyncio.create_task(self._run_connection(spec))
+        self._owner = owner
+        await self._ready.wait()
+        if not self.connected:
+            self._owner = None
+            await owner  # пробрасывает исходную ошибку подключения
+
+    async def _run_connection(self, spec: McpServer) -> None:
+        """Фоновый таск, владеющий контекстами соединения до вызова `close()`."""
         stack = AsyncExitStack()
         try:
             if spec.transport == "http":
@@ -98,11 +119,17 @@ class McpAdapter:
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
         except BaseException:
+            self._ready.set()
             await stack.aclose()
             raise
-        self._stack = stack
-        self._session = session
         self._spec = spec
+        self._session = session
+        self._ready.set()
+        try:
+            await self._stop.wait()
+        finally:
+            await stack.aclose()
+            self._session = None
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """Список инструментов сервера: имя, описание, JSON-схема аргументов."""
@@ -193,10 +220,13 @@ class McpAdapter:
         return count
 
     async def close(self) -> None:
-        """Закрыть соединение (сессию и транспорт)."""
-        if self._stack is not None:
-            await self._stack.aclose()
-            self._stack = None
+        """Закрыть соединение (сессию и транспорт). Безопасен из любого таска."""
+        self._stop.set()
+        owner = self._owner
+        self._owner = None
+        if owner is not None:
+            with suppress(BaseException):
+                await owner
         self._session = None
 
     def _require_session(self) -> ClientSession:
