@@ -3,16 +3,17 @@
 // кнопки «Задача», «Память», «Профили», «Настройки» — справа. Тело панели раскрывается
 // справа колонной и отодвигает колонку сообщений (не перекрывает её).
 // Заголовок панели — в её хедере.
-import { computed, ref } from "vue";
-import { NButton, NScrollbar } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
-import McpPanel from "./McpPanel.vue";
-import MemoryPanel from "./MemoryPanel.vue";
-import ProfilePanel from "./ProfilePanel.vue";
-import SettingsPanel from "./SettingsPanel.vue";
-import TaskPanel from "./TaskPanel.vue";
 
-type Tab = "task" | "memory" | "profiles" | "mcp" | "settings" | null;
+import { NButton, NScrollbar } from 'naive-ui';
+import { computed, ref } from 'vue';
+import { useAgentsStore } from '@/stores/agents';
+import McpPanel from './McpPanel.vue';
+import MemoryPanel from './MemoryPanel.vue';
+import ProfilePanel from './ProfilePanel.vue';
+import SettingsPanel from './SettingsPanel.vue';
+import TaskPanel from './TaskPanel.vue';
+
+type Tab = 'task' | 'memory' | 'profiles' | 'mcp' | 'settings' | null;
 
 const activeTab = ref<Tab>(null);
 
@@ -23,11 +24,11 @@ function toggle(tab: Exclude<Tab, null>): void {
 const store = useAgentsStore();
 const task = computed(() => store.activeAgent?.task ?? null);
 const PHASE_SHORT: Record<string, string> = {
-  idle: "без задачи",
-  planning: "планирование",
-  execution: "выполнение",
-  validation: "проверка",
-  done: "готово",
+  idle: 'без задачи',
+  planning: 'планирование',
+  execution: 'выполнение',
+  validation: 'проверка',
+  done: 'готово',
 };
 /** компактная строка-статус для полосы: «выполнение · 3/6» */
 const taskSummary = computed(() => {
@@ -41,13 +42,13 @@ const taskSummary = computed(() => {
 });
 
 const TITLES: Record<Exclude<Tab, null>, string> = {
-  task: "Задача",
-  memory: "Память",
-  profiles: "Профили",
-  mcp: "MCP",
-  settings: "Настройки",
+  task: 'Задача',
+  memory: 'Память',
+  profiles: 'Профили',
+  mcp: 'MCP',
+  settings: 'Настройки',
 };
-const rpTitle = computed(() => (activeTab.value === null ? "" : TITLES[activeTab.value]));
+const rpTitle = computed(() => (activeTab.value === null ? '' : TITLES[activeTab.value]));
 </script>
 
 <template>

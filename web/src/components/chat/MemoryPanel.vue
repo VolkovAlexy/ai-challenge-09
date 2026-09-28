@@ -2,9 +2,10 @@
 // Панель памяти: вертикальные сворачиваемые блоки рабочей памяти (scratchpad) и
 // долговременной памяти (список записей: добавить / отредактировать / удалить).
 // Состояние задачи (TODO) вынесено в отдельную вкладку TaskPanel верхней панели.
-import { computed, ref, watch } from "vue";
-import { NCollapse, NCollapseItem, NInput, NButton } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
+
+import { NButton, NCollapse, NCollapseItem, NInput } from 'naive-ui';
+import { computed, ref, watch } from 'vue';
+import { useAgentsStore } from '@/stores/agents';
 
 const props = defineProps<{ active: boolean }>();
 
@@ -13,13 +14,13 @@ const agent = computed(() => store.activeAgent);
 const invariants = computed(() => agent.value?.invariants ?? []);
 
 // --- рабочая память ---
-const draft = ref("");
+const draft = ref('');
 const editing = ref(false);
 
 watch(
   () => agent.value?.scratchpad,
   (value) => {
-    if (!editing.value) draft.value = value ?? "";
+    if (!editing.value) draft.value = value ?? '';
   },
   { immediate: true },
 );
@@ -43,10 +44,10 @@ async function onPadBlur(): Promise<void> {
 const entries = computed(() => store.longtermEntries);
 const loading = ref(false);
 const error = ref<string | null>(null);
-const newText = ref("");
+const newText = ref('');
 const adding = ref(false);
 const editIndex = ref<number | null>(null);
-const editDraft = ref("");
+const editDraft = ref('');
 
 watch(
   () => props.active,
@@ -75,7 +76,7 @@ async function addEntry(): Promise<void> {
   error.value = null;
   try {
     await store.addLongterm(content);
-    newText.value = "";
+    newText.value = '';
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -85,7 +86,7 @@ async function addEntry(): Promise<void> {
 
 function startEdit(index: number): void {
   editIndex.value = index;
-  editDraft.value = entries.value[index] ?? "";
+  editDraft.value = entries.value[index] ?? '';
 }
 
 async function saveEdit(): Promise<void> {

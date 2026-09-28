@@ -1,6 +1,7 @@
 // Fetch-обёртка: все REST-эндпоинты + SSE-отправка сообщения (§5.1).
 // Ошибки бэкенда ({detail}) маппятся в ApiError со статусом.
 
+import { sseEvents } from './sse';
 import type {
   AgentDTO,
   CommandDTO,
@@ -16,10 +17,9 @@ import type {
   SessionInfoDTO,
   StreamEvent,
   TaskCommandRequest,
-} from "./types";
-import { sseEvents } from "./sse";
+} from './types';
 
-const BASE = "/api";
+const BASE = '/api';
 
 export class ApiError extends Error {
   constructor(
@@ -27,7 +27,7 @@ export class ApiError extends Error {
     detail: string,
   ) {
     super(detail);
-    this.name = "ApiError";
+    this.name = 'ApiError';
   }
 }
 
@@ -36,17 +36,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   try {
     response = await fetch(BASE + path, {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
-    throw new ApiError(0, "нет соединения с бэкендом");
+    throw new ApiError(0, 'нет соединения с бэкендом');
   }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
     try {
       const data = (await response.json()) as { detail?: string };
-      if (typeof data.detail === "string") detail = data.detail;
+      if (typeof data.detail === 'string') detail = data.detail;
     } catch {
       /* тело не JSON — оставляем HTTP-статус */
     }
@@ -58,139 +58,146 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
 /** Строит query-строку `?project_id=…` или пустую строку. */
 function query(projectId?: string): string {
-  if (!projectId) return "";
-  return "?project_id=" + encodeURIComponent(projectId);
+  if (!projectId) return '';
+  return `?project_id=${encodeURIComponent(projectId)}`;
 }
 
 export const api = {
-  getConfig: () => request<ConfigDTO>("GET", "/config"),
-  getCommands: () => request<CommandDTO[]>("GET", "/commands"),
-  getSystemPrompt: () => request<{ path: string; content: string }>("GET", "/system-prompt"),
+  getConfig: () => request<ConfigDTO>('GET', '/config'),
+  getCommands: () => request<CommandDTO[]>('GET', '/commands'),
+  getSystemPrompt: () => request<{ path: string; content: string }>('GET', '/system-prompt'),
   putSystemPrompt: (path: string) =>
-    request<{ path: string; content: string }>("PUT", "/system-prompt", { path }),
+    request<{ path: string; content: string }>('PUT', '/system-prompt', { path }),
 
-  listAgents: () => request<AgentDTO[]>("GET", "/agents"),
+  listAgents: () => request<AgentDTO[]>('GET', '/agents'),
   createAgent: (name?: string, projectId?: string) =>
-    request<AgentDTO>("POST", "/agents", { name, project_id: projectId }),
-  closeAgent: (id: string) => request<unknown>("DELETE", `/agents/${id}`),
+    request<AgentDTO>('POST', '/agents', { name, project_id: projectId }),
+  closeAgent: (id: string) => request<unknown>('DELETE', `/agents/${id}`),
   patchAgent: (id: string, patch: PatchAgentDTO) =>
-    request<AgentDTO>("PATCH", `/agents/${id}`, patch),
+    request<AgentDTO>('PATCH', `/agents/${id}`, patch),
   getMessages: (id: string) => request<MessageDTO[]>(`GET`, `/agents/${id}/messages`),
-  clearMessages: (id: string) => request<unknown>("DELETE", `/agents/${id}/messages`),
+  clearMessages: (id: string) => request<unknown>('DELETE', `/agents/${id}/messages`),
 
   listSessions: (params?: { limit?: number; offset?: number; project_id?: string }) => {
     const qs = new URLSearchParams();
-    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
-    if (params?.offset !== undefined) qs.set("offset", String(params.offset));
-    if (params?.project_id !== undefined) qs.set("project_id", params.project_id);
-    const query = qs.size > 0 ? "?" + qs.toString() : "";
-    return request<SessionInfoDTO[]>("GET", `/sessions${query}`);
+    if (params?.limit !== undefined) qs.set('limit', String(params.limit));
+    if (params?.offset !== undefined) qs.set('offset', String(params.offset));
+    if (params?.project_id !== undefined) qs.set('project_id', params.project_id);
+    const query = qs.size > 0 ? `?${qs.toString()}` : '';
+    return request<SessionInfoDTO[]>('GET', `/sessions${query}`);
   },
   loadSession: (id: string, sessionId: string) =>
-    request<AgentDTO>("POST", `/agents/${id}/load-session`, { session_id: sessionId }),
+    request<AgentDTO>('POST', `/agents/${id}/load-session`, { session_id: sessionId }),
   exportSession: (id: string, path?: string) =>
-    request<{ path: string }>("POST", `/agents/${id}/export`, path ? { path } : {}),
+    request<{ path: string }>('POST', `/agents/${id}/export`, path ? { path } : {}),
   deleteSession: (sessionId: string) =>
-    request<{ ok: boolean }>("DELETE", `/sessions/${sessionId}`),
-  branchSession: (sessionId: string) =>
-    request<AgentDTO>("POST", `/sessions/${sessionId}/branch`),
+    request<{ ok: boolean }>('DELETE', `/sessions/${sessionId}`),
+  branchSession: (sessionId: string) => request<AgentDTO>('POST', `/sessions/${sessionId}/branch`),
   renameSession: (sessionId: string, title: string) =>
-    request<{ ok: boolean }>("PATCH", `/sessions/${sessionId}`, { title }),
+    request<{ ok: boolean }>('PATCH', `/sessions/${sessionId}`, { title }),
   markSessionRead: (sessionId: string) =>
-    request<{ ok: boolean }>("POST", `/scheduler/mark-read?session_id=${encodeURIComponent(sessionId)}`),
+    request<{ ok: boolean }>(
+      'POST',
+      `/scheduler/mark-read?session_id=${encodeURIComponent(sessionId)}`,
+    ),
+
+  deleteSessionsBatch: (ids: string[]) =>
+    request<{ deleted: number }>('POST', `/sessions/batch/delete`, { ids }),
+  moveSessionsBatch: (ids: string[], projectId: string) =>
+    request<{ moved: number }>('POST', `/sessions/batch/move`, { ids, project_id: projectId }),
+  exportSessionsBatch: (ids: string[]) =>
+    request<{ paths: string[] }>('POST', `/sessions/batch/export`, { ids }),
 
   // --- проекты (Слой 1) ---
 
-  listProjects: () => request<ProjectDTO[]>("GET", "/projects"),
-  createProject: (name: string) =>
-    request<ProjectDTO>("POST", "/projects", { name }),
-  getProject: (id: string) => request<ProjectDTO>("GET", `/projects/${id}`),
+  listProjects: () => request<ProjectDTO[]>('GET', '/projects'),
+  createProject: (name: string) => request<ProjectDTO>('POST', '/projects', { name }),
+  getProject: (id: string) => request<ProjectDTO>('GET', `/projects/${id}`),
   renameProject: (id: string, name: string) =>
-    request<ProjectDTO>("PATCH", `/projects/${id}`, { name }),
-  deleteProject: (id: string) => request<{ ok: boolean }>("DELETE", `/projects/${id}`),
+    request<ProjectDTO>('PATCH', `/projects/${id}`, { name }),
+  deleteProject: (id: string) => request<{ ok: boolean }>('DELETE', `/projects/${id}`),
 
   // --- профили (глобальный пул + привязка к проекту) ---
 
-  listProfiles: () => request<ProfileDTO[]>("GET", "/profiles"),
+  listProfiles: () => request<ProfileDTO[]>('GET', '/profiles'),
   createProfile: (name: string, content: string) =>
-    request<ProfileDTO>("POST", "/profiles", { name, content }),
+    request<ProfileDTO>('POST', '/profiles', { name, content }),
   updateProfile: (id: string, patch: { name?: string; content?: string }) =>
-    request<ProfileDTO>("PATCH", `/profiles/${id}`, patch),
-  deleteProfile: (id: string) => request<{ ok: boolean }>("DELETE", `/profiles/${id}`),
+    request<ProfileDTO>('PATCH', `/profiles/${id}`, patch),
+  deleteProfile: (id: string) => request<{ ok: boolean }>('DELETE', `/profiles/${id}`),
   getProjectProfiles: (projectId: string) =>
-    request<ProfileDTO[]>("GET", `/projects/${projectId}/profiles`),
+    request<ProfileDTO[]>('GET', `/projects/${projectId}/profiles`),
   setProjectProfiles: (projectId: string, profileIds: string[]) =>
-    request<ProfileDTO[]>("PUT", `/projects/${projectId}/profiles`, { profile_ids: profileIds }),
+    request<ProfileDTO[]>('PUT', `/projects/${projectId}/profiles`, { profile_ids: profileIds }),
 
-  cancel: (id: string) => request<unknown>("POST", `/agents/${id}/cancel`),
+  cancel: (id: string) => request<unknown>('POST', `/agents/${id}/cancel`),
 
   // --- MCP-серверы ---
 
-  listMcp: () => request<McpDTO[]>("GET", "/mcp"),
-  setMcp: (name: string, body: McpPatchRequest) =>
-    request<McpDTO[]>("PATCH", `/mcp/${name}`, body),
+  listMcp: () => request<McpDTO[]>('GET', '/mcp'),
+  setMcp: (name: string, body: McpPatchRequest) => request<McpDTO[]>('PATCH', `/mcp/${name}`, body),
 
   // --- память ---
 
   /** Рабочая память: заменить содержимое scratchpad. */
   putScratchpad: (id: string, content: string) =>
-    request<{ content: string }>("PUT", `/agents/${id}/scratchpad`, { content }),
+    request<{ content: string }>('PUT', `/agents/${id}/scratchpad`, { content }),
 
   /** Команда состоянию задачи (конечный автомат): POST завершает → возвращает агента. */
   taskCommand: (id: string, body: TaskCommandRequest) =>
-    request<AgentDTO>("POST", `/agents/${id}/task`, body),
+    request<AgentDTO>('POST', `/agents/${id}/task`, body),
 
   /** Ветка от сообщения: копия истории до message_index включительно + переключение. */
   forkAt: (id: string, messageIndex: number) =>
-    request<ForkResponseDTO>("POST", `/agents/${id}/fork`, { message_index: messageIndex }),
+    request<ForkResponseDTO>('POST', `/agents/${id}/fork`, { message_index: messageIndex }),
 
   /** Получить факты (стратегия facts): ключ-значение память диалога. */
-  getFacts: (id: string) => request<Record<string, string>>("GET", `/agents/${id}/facts`),
+  getFacts: (id: string) => request<Record<string, string>>('GET', `/agents/${id}/facts`),
 
   /** Полностью заменить facts-блок агента. */
   putFacts: (id: string, facts: Record<string, string>) =>
-    request<Record<string, string>>("PUT", `/agents/${id}/facts`, { facts }),
+    request<Record<string, string>>('PUT', `/agents/${id}/facts`, { facts }),
 
   /** Долговременная память проекта: содержимое + записи. */
-  getLongterm: (projectId?: string) =>
-    request<LongTermDTO>("GET", `/longterm${query(projectId)}`),
+  getLongterm: (projectId?: string) => request<LongTermDTO>('GET', `/longterm${query(projectId)}`),
 
   /** Добавить знание в долговременную память проекта. */
   remember: (content: string, projectId?: string) =>
-    request<LongTermDTO>("POST", `/longterm${query(projectId)}`, { content }),
+    request<LongTermDTO>('POST', `/longterm${query(projectId)}`, { content }),
 
   /** Удалить запись долговременной памяти проекта по индексу. */
   forget: (index: number, projectId?: string) =>
-    request<LongTermDTO>("DELETE", `/longterm/${index}${query(projectId)}`),
+    request<LongTermDTO>('DELETE', `/longterm/${index}${query(projectId)}`),
 
   /** Заменить запись долговременной памяти проекта по индексу. */
   updateLongterm: (index: number, content: string, projectId?: string) =>
-    request<LongTermDTO>("PUT", `/longterm/${index}${query(projectId)}`, { content }),
+    request<LongTermDTO>('PUT', `/longterm/${index}${query(projectId)}`, { content }),
 
   /** Принять предложение агента (memory_suggestion) — знание уходит в долгосрочную память. */
-  acceptSuggestion: (id: string) => request<LongTermDTO>("POST", `/agents/${id}/memory-suggestion/accept`),
+  acceptSuggestion: (id: string) =>
+    request<LongTermDTO>('POST', `/agents/${id}/memory-suggestion/accept`),
 
   /** Отклонить предложение агента. */
   dismissSuggestion: (id: string) =>
-    request<unknown>("POST", `/agents/${id}/memory-suggestion/dismiss`),
+    request<unknown>('POST', `/agents/${id}/memory-suggestion/dismiss`),
 
   /** Отправка сообщения; ответ — SSE-поток событий §5.2. */
   async *sendMessage(id: string, content: string): AsyncGenerator<StreamEvent> {
     let response: Response;
     try {
       response = await fetch(`${BASE}/agents/${id}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content }),
       });
     } catch {
-      throw new ApiError(0, "нет соединения с бэкендом");
+      throw new ApiError(0, 'нет соединения с бэкендом');
     }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try {
         const data = (await response.json()) as { detail?: string };
-        if (typeof data.detail === "string") detail = data.detail;
+        if (typeof data.detail === 'string') detail = data.detail;
       } catch {
         /* тело не JSON */
       }
@@ -201,9 +208,13 @@ export const api = {
       try {
         const obj = JSON.parse(raw) as Record<string, unknown> & { event?: string };
         const { event, ...fields } = obj;
-        parsed = { event: event ?? "error", ...fields } as unknown as StreamEvent;
+        parsed = { event: event ?? 'error', ...fields } as unknown as StreamEvent;
       } catch {
-        parsed = { event: "error", kind: "network", detail: `некорректное SSE-событие: ${raw.slice(0, 100)}` };
+        parsed = {
+          event: 'error',
+          kind: 'network',
+          detail: `некорректное SSE-событие: ${raw.slice(0, 100)}`,
+        };
       }
       yield parsed;
     }

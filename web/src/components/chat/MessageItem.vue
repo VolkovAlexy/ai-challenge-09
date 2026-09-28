@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { NTag } from "naive-ui";
-import MarkdownIt from "markdown-it";
-import DOMPurify from "dompurify";
-import type { MessageDTO } from "@/api/types";
+import DOMPurify from 'dompurify';
+import MarkdownIt from 'markdown-it';
+import { NTag } from 'naive-ui';
+import { computed, ref } from 'vue';
+import type { MessageDTO } from '@/api/types';
 
 const props = defineProps<{ message: MessageDTO; live?: boolean }>();
 
@@ -13,20 +13,20 @@ const emit = defineEmits<{ action: [id: string] }>();
 /** инлайн-иконки (SVG-пути, stroke) для кнопок действий */
 const ICONS: Record<string, string[]> = {
   branch: [
-    "M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
-    "M18 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
-    "M6 9v3a4 4 0 0 0 4 4h2",
-    "M18 21v-3a4 4 0 0 0-4-4",
+    'M6 3a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+    'M18 15a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+    'M6 9v3a4 4 0 0 0 4 4h2',
+    'M18 21v-3a4 4 0 0 0-4-4',
   ],
-  remember: ["M12 2l2.9 6.26 6.6.57-5 4.4 1.5 6.47L12 16.7 5.99 19.7l1.5-6.47-5-4.4 6.6-.57z"],
-  copy: ["M9 9h12v12H9z", "M5 15V5a2 2 0 0 1 2-2h10"],
+  remember: ['M12 2l2.9 6.26 6.6.57-5 4.4 1.5 6.47L12 16.7 5.99 19.7l1.5-6.47-5-4.4 6.6-.57z'],
+  copy: ['M9 9h12v12H9z', 'M5 15V5a2 2 0 0 1 2-2h10'],
 };
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
-const isAssistant = computed(() => props.message.role === "assistant");
-const isUser = computed(() => props.message.role === "user");
-const isTool = computed(() => props.message.role === "tool");
+const isAssistant = computed(() => props.message.role === 'assistant');
+const isUser = computed(() => props.message.role === 'user');
+const isTool = computed(() => props.message.role === 'tool');
 const isError = computed(() => props.message.error != null);
 
 /** кнопки действий реплики — только для диалога, без system-ноток и ошибок */
@@ -34,32 +34,32 @@ const actions = computed(() => {
   if (isError.value) return [];
   const list: { id: string; label: string; icon: string[] }[] = [];
   if (isAssistant.value || isUser.value) {
-    list.push({ id: "branch", label: "Ветка отсюда", icon: ICONS.branch });
+    list.push({ id: 'branch', label: 'Ветка отсюда', icon: ICONS.branch });
   }
   if (isUser.value) {
-    list.push({ id: "remember", label: "Запомнить", icon: ICONS.remember });
+    list.push({ id: 'remember', label: 'Запомнить', icon: ICONS.remember });
   }
   if (isAssistant.value || isUser.value) {
-    list.push({ id: "copy", label: "Копировать", icon: ICONS.copy });
+    list.push({ id: 'copy', label: 'Копировать', icon: ICONS.copy });
   }
   return list;
 });
 
 function onAction(id: string): void {
-  emit("action", id);
+  emit('action', id);
 }
 
 // --- блок размышлений (thinking-модель) ---
 const reasoningExpanded = ref(false);
-const reasonText = computed(() => props.message.reasoning ?? "");
-const reasonLines = computed(() => (reasonText.value === "" ? [] : reasonText.value.split("\n")));
+const reasonText = computed(() => props.message.reasoning ?? '');
+const reasonLines = computed(() => (reasonText.value === '' ? [] : reasonText.value.split('\n')));
 const reasoningTruncated = computed(() => reasonLines.value.length > 3);
 /** свёрнуто: последние 3 строки живого стрима */
 const reasoningPreview = computed(() =>
-  reasoningTruncated.value ? reasonLines.value.slice(-3).join("\n") : reasonText.value,
+  reasoningTruncated.value ? reasonLines.value.slice(-3).join('\n') : reasonText.value,
 );
 /** спиннер, пока модель думает (контент ещё не начался) */
-const thinking = computed(() => props.live === true && props.message.content === "");
+const thinking = computed(() => props.live === true && props.message.content === '');
 
 function toggleReasoning(): void {
   reasoningExpanded.value = !reasoningExpanded.value;
@@ -68,15 +68,15 @@ function toggleReasoning(): void {
 /** результат инструмента: «🔧 имя: вывод» — полный текст переносится по строкам */
 const toolExpanded = ref(false);
 const toolFull = computed(() => {
-  if (!isTool.value) return "";
-  const name = props.message.tool_name ?? "инструмент";
+  if (!isTool.value) return '';
+  const name = props.message.tool_name ?? 'инструмент';
   return `🔧 ${name}: ${props.message.content}`;
 });
 /** свёрнуто: первые 3 строки + многоточие; клик по сообщению раскрывает всё */
-const toolLines = computed(() => (toolFull.value === "" ? [] : toolFull.value.split("\n")));
+const toolLines = computed(() => (toolFull.value === '' ? [] : toolFull.value.split('\n')));
 const toolTruncated = computed(() => toolLines.value.length > 3);
 const toolPreview = computed(() =>
-  toolTruncated.value ? `${toolLines.value.slice(0, 3).join("\n")}\n…` : toolFull.value,
+  toolTruncated.value ? `${toolLines.value.slice(0, 3).join('\n')}\n…` : toolFull.value,
 );
 function toggleTool(): void {
   if (toolTruncated.value) toolExpanded.value = !toolExpanded.value;
@@ -86,13 +86,13 @@ function toggleTool(): void {
 const calledTools = computed(() => props.message.tool_calls ?? null);
 
 const rendered = computed(() => {
-  if (!isAssistant.value) return "";
+  if (!isAssistant.value) return '';
   return DOMPurify.sanitize(md.render(props.message.content));
 });
 
 const userEscaped = computed(() => {
-  if (!isUser.value) return "";
-  const div = document.createElement("div");
+  if (!isUser.value) return '';
+  const div = document.createElement('div');
   div.textContent = props.message.content;
   return div.innerHTML;
 });
@@ -101,7 +101,7 @@ const tokensLine = computed(() => {
   const u = props.message.usage;
   if (u == null) return null;
   const approx = u.approx === true;
-  let line = `in ${approx ? "~" : ""}${u.prompt_tokens ?? 0} · out ${approx ? "~" : ""}${u.completion_tokens ?? 0}`;
+  let line = `in ${approx ? '~' : ''}${u.prompt_tokens ?? 0} · out ${approx ? '~' : ''}${u.completion_tokens ?? 0}`;
   if (u.reasoning_tokens !== undefined && u.reasoning_tokens !== 0) {
     line += ` · think ${u.reasoning_tokens}`;
   }

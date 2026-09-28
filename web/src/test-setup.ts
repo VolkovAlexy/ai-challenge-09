@@ -1,8 +1,8 @@
 // Общая настройка тестового окружения: localStorage + config @vue/test-utils.
-import { config } from "@vue/test-utils";
+import { config } from '@vue/test-utils';
 
 // happy-dom в некоторых версиях не экспортирует localStorage в глобал — подстраховка.
-if (typeof globalThis.localStorage === "undefined") {
+if (typeof globalThis.localStorage === 'undefined') {
   const store = new Map<string, string>();
   const storage = {
     getItem: (k: string): string | null => store.get(k) ?? null,
@@ -20,7 +20,7 @@ if (typeof globalThis.localStorage === "undefined") {
       return store.size;
     },
   };
-  Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
+  Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true });
 }
 
 config.global.renderStubDefaultSlot = true;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { NInput, NButton, NSelect } from "naive-ui";
-import type { ChatCommand } from "@/commands/registry";
+import { NButton, NInput, NSelect } from 'naive-ui';
+import { computed, ref } from 'vue';
+import type { ChatCommand } from '@/commands/registry';
 
 const props = defineProps<{
   commands: ChatCommand[];
@@ -19,22 +19,20 @@ const emit = defineEmits<{
   profileChange: [profileId: string];
 }>();
 
-const text = ref("");
+const text = ref('');
 const menuIndex = ref(0);
 
 const menuOpen = computed(() => menuItems.value.length > 0);
 
-const modelOptions = computed(() =>
-  props.modelIds().map((m) => ({ label: m, value: m })),
-);
+const modelOptions = computed(() => props.modelIds().map((m) => ({ label: m, value: m })));
 
-const profileValue = computed(() => props.currentProfile ?? "");
+const profileValue = computed(() => props.currentProfile ?? '');
 
 const menuItems = computed<string[]>(() => {
   const t = text.value;
-  if (!t.startsWith("/")) return [];
+  if (!t.startsWith('/')) return [];
   const parts = t.slice(1).split(/\s+/);
-  if (parts.length === 1 && parts[0] !== "") {
+  if (parts.length === 1 && parts[0] !== '') {
     return props.commands
       .filter((c) => c.name.startsWith(parts[0].toLowerCase()))
       .map((c) => `/${c.name} ${c.args_spec}`.trim());
@@ -44,9 +42,9 @@ const menuItems = computed<string[]>(() => {
 
 function submit(): void {
   const t = text.value.trim();
-  if (t === "" || props.streaming) return;
-  text.value = "";
-  emit("send", t);
+  if (t === '' || props.streaming) return;
+  text.value = '';
+  emit('send', t);
 }
 
 function onEnter(ev: KeyboardEvent): void {
@@ -66,23 +64,23 @@ function applyVariant(variant: string): void {
 }
 
 function onKeydown(ev: KeyboardEvent): void {
-  if (ev.key === "Enter") {
+  if (ev.key === 'Enter') {
     onEnter(ev);
     return;
   }
-  if (ev.key === "ArrowDown" && menuOpen.value) {
+  if (ev.key === 'ArrowDown' && menuOpen.value) {
     ev.preventDefault();
     menuIndex.value = (menuIndex.value + 1) % menuItems.value.length;
     return;
   }
-  if (ev.key === "ArrowUp" && menuOpen.value) {
+  if (ev.key === 'ArrowUp' && menuOpen.value) {
     ev.preventDefault();
     menuIndex.value = (menuIndex.value - 1 + menuItems.value.length) % menuItems.value.length;
     return;
   }
-  if (ev.key === "Escape" && props.streaming) {
+  if (ev.key === 'Escape' && props.streaming) {
     ev.preventDefault();
-    emit("stop");
+    emit('stop');
   }
 }
 </script>

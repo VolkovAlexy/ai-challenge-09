@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // Панель «Профили»: глобальный пул профилей роли + выбор, какие профили доступны
 // текущему проекту. Активный профиль чата выбирается селектором рядом с моделью.
-import { computed, ref, watch } from "vue";
-import { NCollapse, NCollapseItem, NInput, NButton, NCheckbox } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
-import { useProfilesStore } from "@/stores/profiles";
-import { useProjectsStore } from "@/stores/projects";
+
+import { NButton, NCheckbox, NCollapse, NCollapseItem, NInput } from 'naive-ui';
+import { computed, ref, watch } from 'vue';
+import { useAgentsStore } from '@/stores/agents';
+import { useProfilesStore } from '@/stores/profiles';
+import { useProjectsStore } from '@/stores/projects';
 
 const props = defineProps<{ active: boolean }>();
 
@@ -16,9 +17,9 @@ const projectsStore = useProjectsStore();
 const error = ref<string | null>(null);
 
 const agent = computed(() => agentsStore.activeAgent);
-const projectId = computed(() => agent.value?.projectId ?? "");
+const projectId = computed(() => agent.value?.projectId ?? '');
 const projectName = computed(
-  () => projectsStore.projects.find((p) => p.id === projectId.value)?.name ?? "Проект",
+  () => projectsStore.projects.find((p) => p.id === projectId.value)?.name ?? 'Проект',
 );
 
 const profiles = computed(() => profilesStore.profiles);
@@ -35,12 +36,9 @@ watch(
   { immediate: true },
 );
 
-watch(
-  projectId,
-  () => {
-    if (props.active) void loadProject();
-  },
-);
+watch(projectId, () => {
+  if (props.active) void loadProject();
+});
 
 async function reload(): Promise<void> {
   error.value = null;
@@ -62,8 +60,8 @@ async function loadProject(): Promise<void> {
 }
 
 // --- создание / редактирование / удаление ---
-const newName = ref("");
-const newContent = ref("");
+const newName = ref('');
+const newContent = ref('');
 const creating = ref(false);
 
 async function addProfile(): Promise<void> {
@@ -74,8 +72,8 @@ async function addProfile(): Promise<void> {
   error.value = null;
   try {
     await profilesStore.create(name, content);
-    newName.value = "";
-    newContent.value = "";
+    newName.value = '';
+    newContent.value = '';
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -84,8 +82,8 @@ async function addProfile(): Promise<void> {
 }
 
 const editId = ref<string | null>(null);
-const editName = ref("");
-const editContent = ref("");
+const editName = ref('');
+const editContent = ref('');
 
 function startEdit(id: string): void {
   const p = profilesStore.profileById(id);

@@ -16,7 +16,15 @@
     "jsx": "preserve",
     "types": ["vitest/globals", "happy-dom", "node"],
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "src/**/*.test.ts", "vite.config.ts", "vitest.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "src/**/*.test.ts",
+    "vite.config.ts",
+    "vitest.config.ts"
+  ]
 }

@@ -1,20 +1,20 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import type { SubagentBlock } from "@/stores/agents";
+import { computed, ref } from 'vue';
+import type { SubagentBlock } from '@/stores/agents';
 
 const props = defineProps<{ block: SubagentBlock }>();
 
 const expanded = ref(false);
-const lines = computed(() => (props.block.text === "" ? [] : props.block.text.split("\n")));
+const lines = computed(() => (props.block.text === '' ? [] : props.block.text.split('\n')));
 const truncated = computed(() => lines.value.length > 3);
 const preview = computed(() =>
-  truncated.value ? lines.value.slice(-3).join("\n") : props.block.text,
+  truncated.value ? lines.value.slice(-3).join('\n') : props.block.text,
 );
 /** статус субагента в заголовке — чтобы было понятно, что происходит */
 const busy = computed(() => !props.block.done);
 const status = computed(() => {
-  if (props.block.done) return "готово";
-  return props.block.text === "" ? "думает…" : "в работе…";
+  if (props.block.done) return 'готово';
+  return props.block.text === '' ? 'думает…' : 'в работе…';
 });
 
 function toggle(): void {

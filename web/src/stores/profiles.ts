@@ -1,12 +1,13 @@
 // Профили роли: глобальный пул + привязка к проекту.
 // Глобальные профили — общий реестр; проекты выбирают себе подмножество.
-import { ref } from "vue";
-import { defineStore } from "pinia";
-import type { ProfileDTO } from "@/api/types";
-import { api } from "@/api/client";
-import { useProjectsStore } from "./projects";
 
-export const useProfilesStore = defineStore("profiles", () => {
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
+import { api } from '@/api/client';
+import type { ProfileDTO } from '@/api/types';
+import { useProjectsStore } from './projects';
+
+export const useProfilesStore = defineStore('profiles', () => {
   const profiles = ref<ProfileDTO[]>([]);
   /** Кэш: project_id -> профили, привязанные к проекту. */
   const projectProfiles = ref<Record<string, ProfileDTO[]>>({});

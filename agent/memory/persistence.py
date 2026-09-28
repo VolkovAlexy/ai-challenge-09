@@ -200,6 +200,16 @@ class SessionStore:
             if branch_name != active_branch
         ]
         with self._lock, self._conn:
+            existing = self._conn.execute(
+                "SELECT updated_at FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if existing is not None:
+                stored = self._conn.execute(
+                    "SELECT message_json FROM messages WHERE session_id = ? ORDER BY seq",
+                    (session_id,),
+                ).fetchall()
+                if [r[0] for r in stored] == [r[2] for r in rows]:
+                    now = existing[0]
             self._conn.execute(
                 """
                     INSERT INTO sessions
@@ -391,6 +401,15 @@ class SessionStore:
                 "SELECT project_id FROM sessions WHERE id = ?", (session_id,)
             ).fetchone()
         return row[0] or "" if row else ""
+
+    def set_project_id(self, session_id: str, project_id: str) -> bool:
+        """Переносит сессию в другой проект. True, если сессия существовала."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE sessions SET project_id = ?, updated_at = ? WHERE id = ?",
+                (project_id, _now(), session_id),
+            )
+        return cur.rowcount > 0
 
     # --- планировщик: флаги сессии (иконка ⏰ и badge непрочитанного) ---
 

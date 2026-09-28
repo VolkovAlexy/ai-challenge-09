@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Баннер предложения памяти: агент нашёл знание, достойное долговременной памяти.
 // Принять — текст уходит в долговременную память; Отклонить — предложение снимается.
-import { computed, ref } from "vue";
-import { NButton, useMessage } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
+
+import { NButton, useMessage } from 'naive-ui';
+import { computed, ref } from 'vue';
+import { useAgentsStore } from '@/stores/agents';
 
 const store = useAgentsStore();
 const message = useMessage();
@@ -17,9 +18,9 @@ async function accept(): Promise<void> {
   busy.value = true;
   try {
     await store.acceptSuggestion(agent.value.id);
-    message.success("Знание сохранено в долговременную память");
+    message.success('Знание сохранено в долговременную память');
   } catch (e) {
-    message.error(e instanceof Error ? e.message : "не удалось сохранить");
+    message.error(e instanceof Error ? e.message : 'не удалось сохранить');
   } finally {
     busy.value = false;
   }

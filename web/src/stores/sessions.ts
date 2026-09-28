@@ -1,11 +1,11 @@
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import { api } from "@/api/client";
-import type { SessionInfoDTO } from "@/api/types";
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
+import { api } from '@/api/client';
+import type { SessionInfoDTO } from '@/api/types';
 
 const POLL_MS = 15000;
 
-export const useSessionsStore = defineStore("sessions", () => {
+export const useSessionsStore = defineStore('sessions', () => {
   const sessions = ref<SessionInfoDTO[]>([]);
   const loaded = ref(false);
   const loadError = ref<string | null>(null);
@@ -54,6 +54,21 @@ export const useSessionsStore = defineStore("sessions", () => {
     await reload();
   }
 
+  async function removeBatch(ids: string[]): Promise<void> {
+    await api.deleteSessionsBatch(ids);
+    await loadAll();
+  }
+
+  async function moveBatch(ids: string[], projectId: string): Promise<void> {
+    await api.moveSessionsBatch(ids, projectId);
+    await loadAll();
+  }
+
+  async function exportBatch(ids: string[]): Promise<string[]> {
+    const res = await api.exportSessionsBatch(ids);
+    return res.paths;
+  }
+
   async function rename(sessionId: string, title: string): Promise<void> {
     await api.renameSession(sessionId, title);
     await reload();
@@ -70,6 +85,9 @@ export const useSessionsStore = defineStore("sessions", () => {
     startPolling,
     stopPolling,
     remove,
+    removeBatch,
+    moveBatch,
+    exportBatch,
     rename,
   };
 });

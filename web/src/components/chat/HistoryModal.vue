@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { NModal, NButton, NSpace } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
+import { NButton, NModal, NSpace } from 'naive-ui';
+import { computed } from 'vue';
+import { useAgentsStore } from '@/stores/agents';
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -9,13 +9,13 @@ const store = useAgentsStore();
 
 const text = computed(() => {
   const a = store.activeAgent;
-  if (a === null) return "";
+  if (a === null) return '';
   const lines: string[] = [];
   for (const m of a.history) {
     lines.push(`[${m.role}] ${m.content}`);
-    if (m.reasoning !== undefined && m.reasoning !== "") lines.push(`[think] ${m.reasoning}`);
+    if (m.reasoning !== undefined && m.reasoning !== '') lines.push(`[think] ${m.reasoning}`);
   }
-  return lines.join("\n\n");
+  return lines.join('\n\n');
 });
 
 async function copy(): Promise<void> {

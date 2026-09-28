@@ -185,6 +185,37 @@ def test_snapshot_persists_task_state(tmp_path: Path) -> None:
     store.close()
 
 
+def test_snapshot_keeps_updated_at_when_history_unchanged(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "s.db")
+    sid = store.new_id()
+    settings = make_settings()
+    history = [Message(role=Role.USER, content="привет")]
+    store.snapshot(sid, "chat", settings, "SP", history)
+    first_updated = store.list()[0].updated_at
+    time.sleep(0.002)  # гарантируем, что повторный снапшот был бы позже
+
+    store.snapshot(sid, "chat", settings, "SP", history)
+
+    assert store.list()[0].updated_at == first_updated
+    store.close()
+
+
+def test_snapshot_bumps_updated_at_when_history_changed(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path / "s.db")
+    sid = store.new_id()
+    settings = make_settings()
+    store.snapshot(sid, "chat", settings, "SP", [Message(role=Role.USER, content="1")])
+    first_updated = store.list()[0].updated_at
+    time.sleep(0.002)
+
+    store.snapshot(
+        sid, "chat", settings, "SP", [Message(role=Role.USER, content="2")]
+    )
+
+    assert store.list()[0].updated_at != first_updated
+    store.close()
+
+
 def test_snapshot_persists_invariants(tmp_path: Path) -> None:
     store = SessionStore(tmp_path / "s.db")
     sid = store.new_id()

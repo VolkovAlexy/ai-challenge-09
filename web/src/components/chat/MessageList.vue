@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
-import { NButton } from "naive-ui";
-import { useAgentsStore, type SubagentBlock as SubagentBlockT } from "@/stores/agents";
-import type { MessageDTO } from "@/api/types";
-import MessageItem from "./MessageItem.vue";
-import SubagentBlock from "./SubagentBlock.vue";
+import { NButton } from 'naive-ui';
+import { computed, nextTick, ref, watch } from 'vue';
+import type { MessageDTO } from '@/api/types';
+import { type SubagentBlock as SubagentBlockT, useAgentsStore } from '@/stores/agents';
+import MessageItem from './MessageItem.vue';
+import SubagentBlock from './SubagentBlock.vue';
 
 type TimelineItem =
-  | { kind: "msg"; msg: MessageDTO; idx: number }
-  | { kind: "sub"; si: number; block: SubagentBlockT };
+  | { kind: 'msg'; msg: MessageDTO; idx: number }
+  | { kind: 'sub'; si: number; block: SubagentBlockT };
 
 const store = useAgentsStore();
 
@@ -25,15 +25,15 @@ const timeline = computed<TimelineItem[]>(() => {
   const items: TimelineItem[] = [];
   let cursor = 0;
   for (let i = 0; i < hist.length; i++) {
-    items.push({ kind: "msg", msg: hist[i], idx: i });
+    items.push({ kind: 'msg', msg: hist[i], idx: i });
     while (cursor < subs.length && subs[cursor].anchor <= i + 1) {
-      items.push({ kind: "sub", si: cursor, block: subs[cursor] });
+      items.push({ kind: 'sub', si: cursor, block: subs[cursor] });
       cursor++;
     }
   }
   // блоки, чей якорь ещё за пределами выгруженной истории — в конец
   while (cursor < subs.length) {
-    items.push({ kind: "sub", si: cursor, block: subs[cursor] });
+    items.push({ kind: 'sub', si: cursor, block: subs[cursor] });
     cursor++;
   }
   return items;
@@ -59,21 +59,21 @@ async function onAction(index: number, action: string): Promise<void> {
   const message = history.value[index];
   const agentId = agent.value?.id;
   if (message === undefined || agentId === undefined) return;
-  if (action === "copy") {
+  if (action === 'copy') {
     await navigator.clipboard.writeText(message.content);
     return;
   }
-  if (action === "remember") {
+  if (action === 'remember') {
     await store.rememberMessage(message.content);
-    note("Сохранено в долговременную память");
+    note('Сохранено в долговременную память');
     return;
   }
-  if (action === "branch") {
+  if (action === 'branch') {
     try {
       await store.forkAt(agentId, index);
       note(`Ветка создана от сообщения #${index + 1}`);
     } catch (e) {
-      note(e instanceof Error ? e.message : "не удалось создать ветку");
+      note(e instanceof Error ? e.message : 'не удалось создать ветку');
     }
   }
 }
@@ -81,7 +81,7 @@ async function onAction(index: number, action: string): Promise<void> {
 function note(text: string): void {
   const state = agent.value;
   if (state == null) return;
-  state.history.push({ id: `note-${Date.now()}`, role: "system", content: text });
+  state.history.push({ id: `note-${Date.now()}`, role: 'system', content: text });
 }
 
 const EDGE_PX = 40;

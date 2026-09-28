@@ -1,30 +1,36 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
+  darkTheme,
   NConfigProvider,
-  NMessageProvider,
   NDialogProvider,
   NLayout,
   NLayoutContent,
   NLayoutSider,
+  NMessageProvider,
   NModal,
-  darkTheme,
   ruRU,
-} from "naive-ui";
-import { api } from "@/api/client";
-import type { CommandDTO, PatchAgentDTO } from "@/api/types";
-import { useAgentsStore } from "@/stores/agents";
-import { useConfigStore } from "@/stores/config";
-import { useMcpStore } from "@/stores/mcp";
-import { useSessionsStore } from "@/stores/sessions";
-import { useProjectsStore } from "@/stores/projects";
-import { useProfilesStore } from "@/stores/profiles";
-import { buildRegistry, findCommand, parseCommand, type ChatCommand, type CommandContext } from "@/commands/registry";
-import { useChatStream } from "@/composables/useChatStream";
-import ChatView from "@/components/ChatView.vue";
-import SessionSidebar from "@/components/SessionSidebar.vue";
-import ConfirmDialog from "@/components/common/ConfirmDialog.vue";
-import ProjectMemoryModal from "@/components/ProjectMemoryModal.vue";
+} from 'naive-ui';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { api } from '@/api/client';
+import type { CommandDTO, PatchAgentDTO } from '@/api/types';
+import {
+  buildRegistry,
+  type ChatCommand,
+  type CommandContext,
+  findCommand,
+  parseCommand,
+} from '@/commands/registry';
+import ChatView from '@/components/ChatView.vue';
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
+import ProjectMemoryModal from '@/components/ProjectMemoryModal.vue';
+import SessionSidebar from '@/components/SessionSidebar.vue';
+import { useChatStream } from '@/composables/useChatStream';
+import { useAgentsStore } from '@/stores/agents';
+import { useConfigStore } from '@/stores/config';
+import { useMcpStore } from '@/stores/mcp';
+import { useProfilesStore } from '@/stores/profiles';
+import { useProjectsStore } from '@/stores/projects';
+import { useSessionsStore } from '@/stores/sessions';
 
 const agentsStore = useAgentsStore();
 const configStore = useConfigStore();
@@ -39,54 +45,57 @@ const bootError = ref<string | null>(null);
 
 const themeOverrides = {
   common: {
-    primaryColor: "#7aa2f7",
-    primaryColorHover: "#8fb4f9",
-    primaryColorPressed: "#6389dd",
-    primaryColorSuppl: "#7aa2f7",
-    bodyColor: "#101014",
-    cardColor: "#1a1d25",
-    modalColor: "#1a1d25",
-    popoverColor: "#1a1d25",
-    inputColor: "#1c212c",
-    borderColor: "#2a2e3a",
-    dividerColor: "#2a2e3a",
+    primaryColor: '#7aa2f7',
+    primaryColorHover: '#8fb4f9',
+    primaryColorPressed: '#6389dd',
+    primaryColorSuppl: '#7aa2f7',
+    bodyColor: '#101014',
+    cardColor: '#1a1d25',
+    modalColor: '#1a1d25',
+    popoverColor: '#1a1d25',
+    inputColor: '#1c212c',
+    borderColor: '#2a2e3a',
+    dividerColor: '#2a2e3a',
   },
   Layout: {
-    siderColor: "#16171d",
-    siderBorderColor: "#1e2030",
-    contentColor: "#101014",
+    siderColor: '#16171d',
+    siderBorderColor: '#1e2030',
+    contentColor: '#101014',
   },
   Select: {
     peers: {
       InternalSelection: {
-        color: "#1c212c",
-        border: "1px solid #2a2e3a",
+        color: '#1c212c',
+        border: '1px solid #2a2e3a',
       },
     },
   },
 };
 
 type Overlay =
-  | { kind: "none" }
-  | { kind: "confirm"; text: string; action: "close" | "delete-session" | "delete-project" }
-  | { kind: "project-memory"; projectId: string; projectName: string };
-const overlay = ref<Overlay>({ kind: "none" });
+  | { kind: 'none' }
+  | {
+      kind: 'confirm';
+      text: string;
+      action: 'close' | 'delete-session' | 'delete-project';
+    }
+  | { kind: 'project-memory'; projectId: string; projectName: string };
+const overlay = ref<Overlay>({ kind: 'none' });
 
 function onStreamEvent(ev: { event: string }): void {
-  if (ev.event === "done" || ev.event === "cancelled" || ev.event === "error") {
+  if (ev.event === 'done' || ev.event === 'cancelled' || ev.event === 'error') {
     void sessionsStore.loadAll();
     void projectsStore.load();
   }
 }
 
-const stream = useChatStream(
-  () => agentsStore.activeAgentId,
-  onStreamEvent,
-);
+const stream = useChatStream(() => agentsStore.activeAgentId, onStreamEvent);
 
-const activeProjectId = computed(() => agentsStore.activeAgent?.projectId ?? "");
+const activeProjectId = computed(() => agentsStore.activeAgent?.projectId ?? '');
 const profileOptions = computed(() =>
-  profilesStore.profilesOfProject(activeProjectId.value).map((p) => ({ label: p.name, value: p.id })),
+  profilesStore
+    .profilesOfProject(activeProjectId.value)
+    .map((p) => ({ label: p.name, value: p.id })),
 );
 const currentProfile = computed(() => agentsStore.activeAgent?.activeProfileId ?? null);
 
@@ -143,7 +152,11 @@ function cmdContext(): CommandContext {
         const id = agentsStore.activeAgentId;
         const state = id !== null ? agentsStore.agents[id] : undefined;
         if (state !== undefined) {
-          state.history.push({ id: `note-${Date.now()}`, role: "system", content: text });
+          state.history.push({
+            id: `note-${Date.now()}`,
+            role: 'system',
+            content: text,
+          });
         }
       },
     },
@@ -153,14 +166,14 @@ function cmdContext(): CommandContext {
         if (id === null) return;
         const streaming = agentsStore.agents[id]?.streaming === true;
         if (streaming) {
-          const ok = await confirmAsk("Есть незавершённый запрос. Закрыть агента?", "close");
+          const ok = await confirmAsk('Есть незавершённый запрос. Закрыть агента?', 'close');
           if (!ok) return;
         }
         await agentsStore.closeAgent(id);
       },
       exportSession: async (path) => {
         const id = agentsStore.activeAgentId;
-        if (id === null) return "Нет активного агента.";
+        if (id === null) return 'Нет активного агента.';
         const res = await api.exportSession(id, path);
         return `Экспортировано: ${res.path}`;
       },
@@ -176,29 +189,37 @@ async function patchActive(patch: PatchAgentDTO): Promise<void> {
   } catch (e) {
     agentsStore.agents[id]?.history.push({
       id: `patch-err-${Date.now()}`,
-      role: "system",
+      role: 'system',
       content: e instanceof Error ? e.message : String(e),
-      error: { kind: "http", detail: e instanceof Error ? e.message : String(e) },
+      error: {
+        kind: 'http',
+        detail: e instanceof Error ? e.message : String(e),
+      },
     });
   }
 }
 
 let confirmResolve: ((ok: boolean) => void) | null = null;
 let pendingDeleteProject: string | null = null;
-function confirmAsk(text: string, action: "close" | "delete-session" | "delete-project"): Promise<boolean> {
-  overlay.value = { kind: "confirm", text, action };
-  return new Promise((resolve) => { confirmResolve = resolve; });
+function confirmAsk(
+  text: string,
+  action: 'close' | 'delete-session' | 'delete-project',
+): Promise<boolean> {
+  overlay.value = { kind: 'confirm', text, action };
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+  });
 }
 
 function onConfirmAnswer(ok: boolean): void {
   const ov = overlay.value;
-  overlay.value = { kind: "none" };
+  overlay.value = { kind: 'none' };
   confirmResolve?.(ok);
   confirmResolve = null;
-  if (ok && ov.kind === "confirm" && ov.action === "close") {
+  if (ok && ov.kind === 'confirm' && ov.action === 'close') {
     const id = agentsStore.activeAgentId;
     if (id !== null) void agentsStore.closeAgent(id);
-  } else if (ok && ov.kind === "confirm" && ov.action === "delete-project") {
+  } else if (ok && ov.kind === 'confirm' && ov.action === 'delete-project') {
     if (pendingDeleteProject !== null) void doDeleteProject(pendingDeleteProject);
   }
 }
@@ -210,10 +231,10 @@ async function onSend(text: string): Promise<void> {
     if (cmd === undefined) {
       const id = agentsStore.activeAgentId;
       const state = id !== null ? agentsStore.agents[id] : undefined;
-      const known = registry.value.map((c) => `/${c.name}`).join(" ");
+      const known = registry.value.map((c) => `/${c.name}`).join(' ');
       state?.history.push({
         id: `unknown-${Date.now()}`,
-        role: "system",
+        role: 'system',
         content: `Неизвестная команда: /${parsed.cmd}. Доступные команды: ${known}`,
       });
       return;
@@ -221,7 +242,7 @@ async function onSend(text: string): Promise<void> {
     const ctx = cmdContext();
     try {
       const note = await cmd.run(ctx, parsed.args);
-      if (typeof note === "string" && note !== "") ctx.requests.note(note);
+      if (typeof note === 'string' && note !== '') ctx.requests.note(note);
     } catch (e) {
       ctx.requests.note(`Ошибка: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -263,9 +284,19 @@ async function onSessionRename(sessionId: string, title: string): Promise<void> 
 }
 
 async function onSessionDelete(sessionId: string): Promise<void> {
-  const ok = await confirmAsk("Удалить сессию? Действие необратимо.", "delete-session");
+  const ok = await confirmAsk('Удалить сессию? Действие необратимо.', 'delete-session');
   if (!ok) return;
   await sessionsStore.remove(sessionId);
+}
+
+async function onSessionBatchDelete(ids: string[]): Promise<void> {
+  const ok = await confirmAsk(
+    `Удалить выбранные сессии (${ids.length})? Действие необратимо.`,
+    'delete-session',
+  );
+  if (!ok) return;
+  await sessionsStore.removeBatch(ids);
+  await projectsStore.load();
 }
 
 async function onNewChat(projectId?: string): Promise<void> {
@@ -282,7 +313,10 @@ async function onRenameProject(projectId: string, name: string): Promise<void> {
 
 async function onDeleteProject(projectId: string): Promise<void> {
   pendingDeleteProject = projectId;
-  const ok = await confirmAsk("Удалить проект и все его сессии? Действие необратимо.", "delete-project");
+  const ok = await confirmAsk(
+    'Удалить проект и все его сессии? Действие необратимо.',
+    'delete-project',
+  );
   if (ok) await doDeleteProject(projectId);
 }
 
@@ -297,8 +331,8 @@ function onSelectProject(_projectId: string): void {
 }
 
 function onProjectMemory(projectId: string): void {
-  const name = projectsStore.projects.find((p) => p.id === projectId)?.name ?? "Проект";
-  overlay.value = { kind: "project-memory", projectId, projectName: name };
+  const name = projectsStore.projects.find((p) => p.id === projectId)?.name ?? 'Проект';
+  overlay.value = { kind: 'project-memory', projectId, projectName: name };
 }
 </script>
 
@@ -325,6 +359,7 @@ function onProjectMemory(projectId: string): void {
               @delete-project="onDeleteProject"
               @select-project="onSelectProject"
               @memory="onProjectMemory"
+              @batch-delete="onSessionBatchDelete"
             />
           </n-layout-sider>
           <n-layout-content>

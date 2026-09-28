@@ -2,80 +2,81 @@
 // Панель задачи (TODO): конечный автомат задачи — создать, пауза/продолжить,
 // подтвердить план, следующий шаг (с авто-переходом этапа), сбросить. Вынесена из
 // MemoryPanel в отдельную вкладку верхней панели (рядом с памятью, профилями, настройками).
-import { computed, ref } from "vue";
-import { NButton, NInput, NTag } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
-import type { TaskPhase } from "@/api/types";
+
+import { NButton, NInput, NTag } from 'naive-ui';
+import { computed, ref } from 'vue';
+import type { TaskPhase } from '@/api/types';
+import { useAgentsStore } from '@/stores/agents';
 
 const store = useAgentsStore();
 const agent = computed(() => store.activeAgent);
 
 const PHASE_LABELS: Record<TaskPhase, string> = {
-  idle: "без задачи",
-  planning: "планирование",
-  execution: "выполнение",
-  validation: "проверка",
-  done: "готово",
+  idle: 'без задачи',
+  planning: 'планирование',
+  execution: 'выполнение',
+  validation: 'проверка',
+  done: 'готово',
 };
 
 const task = computed(() => agent.value?.task ?? null);
 const invariants = computed(() => agent.value?.invariants ?? []);
 const taskError = ref<string | null>(null);
-const startDescription = ref("");
-const startSteps = ref("");
-const startValidationSteps = ref("");
+const startDescription = ref('');
+const startSteps = ref('');
+const startValidationSteps = ref('');
 const taskBusy = ref(false);
 
 /** Активный список шагов: в «проверке» — шаги проверки, иначе — шаги выполнения.
  * В «готово» шагов не показываем (это выдача финального результата). */
 const activeList = computed(() => {
   const t = task.value;
-  if (t === null || t.phase === "done") return [];
-  return t.phase === "validation" ? t.validation_steps : t.steps;
+  if (t === null || t.phase === 'done') return [];
+  return t.phase === 'validation' ? t.validation_steps : t.steps;
 });
 
 function taskStepText(): string {
   const t = task.value;
   const list = activeList.value;
-  if (t === null || list.length === 0) return "";
+  if (t === null || list.length === 0) return '';
   const n = Math.max(0, Math.min(t.step, list.length));
-  if (n <= 0) return "";
+  if (n <= 0) return '';
   return `Шаг ${n} из ${list.length}`;
 }
 
 /** Отметки для шага: this list выполнен/текущий с учётом активного списка. */
-function stepState(i: number, kind: "exec" | "val"): { done: boolean; current: boolean } {
+function stepState(i: number, kind: 'exec' | 'val'): { done: boolean; current: boolean } {
   const t = task.value;
   if (t === null) return { done: false, current: false };
   const idx = i + 1;
-  if (kind === "exec") {
+  if (kind === 'exec') {
     // после выполнения — все шаги выполнения считаются выполненными
-    if (t.phase === "validation" || t.phase === "done") return { done: true, current: false };
+    if (t.phase === 'validation' || t.phase === 'done') return { done: true, current: false };
     return { done: idx < t.step, current: idx === t.step };
   }
   // шаги проверки начинаются только в фазе «проверка»/«готово»
-  if (t.phase === "planning" || t.phase === "execution") return { done: false, current: false };
+  if (t.phase === 'planning' || t.phase === 'execution') return { done: false, current: false };
   // «готово» — вся проверка пройдена, все шаги проверки выполнены
-  if (t.phase === "done") return { done: true, current: false };
+  if (t.phase === 'done') return { done: true, current: false };
   return { done: idx < t.step, current: idx === t.step };
 }
 
-function stepClass(i: number, kind: "exec" | "val"): Record<string, boolean> {
+function stepClass(i: number, kind: 'exec' | 'val'): Record<string, boolean> {
   const s = stepState(i, kind);
-  return { "task-step-done": s.done, "task-step-current": s.current };
+  return { 'task-step-done': s.done, 'task-step-current': s.current };
 }
 
 /** Подпись кнопки прохождения шага: на последнем шаге этапа — переход в следующий этап. */
 const advanceLabel = computed(() => {
   const t = task.value;
-  if (t === null) return "Шаг выполнен";
-  if (t.phase === "execution") {
-    return t.step >= t.steps.length ? "Завершить и проверить" : "Шаг выполнен (дальше)";
+  if (t === null) return 'Шаг выполнен';
+  if (t.phase === 'execution') {
+    return t.step >= t.steps.length ? 'Завершить и проверить' : 'Шаг выполнен (дальше)';
   }
-  if (t.phase === "validation") {
-    return t.step >= t.validation_steps.length ? "Завершить задачу" : "Шаг выполнен (дальше)";
+  if (t.phase === 'validation') {
+    return t.step >= t.validation_steps.length ? 'Завершить задачу' : 'Шаг выполнен (дальше)';
   }
-  return "Шаг выполнен";
+  return 'Шаг выполнен';
 });
 
 async function runTaskCommand(fn: () => Promise<void>): Promise<boolean> {
@@ -106,18 +107,14 @@ async function onAdvance(): Promise<void> {
   const id = agent.value.id;
   await runTaskCommand(async () => {
     // последний шаг этапа — авто-переход в следующий этап (выполнение → проверка → готово)
-    if (t.phase === "execution" && t.step >= t.steps.length) {
+    if (t.phase === 'execution' && t.step >= t.steps.length) {
       await store.setTaskPhase(
         id,
-        "validation",
-        "все шаги выполнения выполнены — проверь результат и при необходимости внеси правки",
+        'validation',
+        'все шаги выполнения выполнены — проверь результат и при необходимости внеси правки',
       );
-    } else if (t.phase === "validation" && t.step >= t.validation_steps.length) {
-      await store.setTaskPhase(
-        id,
-        "done",
-        "проверка пройдена — верни отчёт о проделанной работе",
-      );
+    } else if (t.phase === 'validation' && t.step >= t.validation_steps.length) {
+      await store.setTaskPhase(id, 'done', 'проверка пройдена — верни отчёт о проделанной работе');
     } else {
       await store.advanceTaskStep(id);
     }
@@ -132,17 +129,19 @@ async function onStart(): Promise<void> {
   const description = startDescription.value.trim();
   if (!description) return;
   const steps = startSteps.value
-    .split("\n")
+    .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const validationSteps = startValidationSteps.value
-    .split("\n")
+    .split('\n')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  await runTaskCommand(() => store.startTask(agent.value!.id, description, steps, undefined, validationSteps));
+  await runTaskCommand(() =>
+    store.startTask(agent.value!.id, description, steps, undefined, validationSteps),
+  );
 }
 const CONTINUATION_TEXT =
-  "План подтверждён. Приступай к выполнению плана: выполни текущий шаг, при необходимости делегируя его субагенту через delegate.";
+  'План подтверждён. Приступай к выполнению плана: выполни текущий шаг, при необходимости делегируя его субагенту через delegate.';
 
 async function onConfirmPlan(): Promise<void> {
   if (agent.value === null) return;

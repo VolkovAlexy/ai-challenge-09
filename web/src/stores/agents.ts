@@ -1,19 +1,29 @@
 // N агентов, activeAgentId, стримы, счётчики (§4).
 // Единственный источник истины: стрим пишется в AgentState инкрементально,
 // неактивная вкладка не рендерится, но стор обновляется.
-import { computed, ref } from "vue";
-import { defineStore } from "pinia";
-import type { AgentDTO, LongTermDTO, MessageDTO, PatchAgentDTO, StreamEvent, TaskCommandRequest, TaskPhase, TaskStateDTO } from "@/api/types";
-import { api } from "@/api/client";
+
+import { defineStore } from 'pinia';
+import { computed, ref } from 'vue';
+import { api } from '@/api/client';
+import type {
+  AgentDTO,
+  LongTermDTO,
+  MessageDTO,
+  PatchAgentDTO,
+  StreamEvent,
+  TaskCommandRequest,
+  TaskPhase,
+  TaskStateDTO,
+} from '@/api/types';
 
 export type AgentId = string;
 
 // префикс внутреннего «продолжай» автопилота (зеркало AUTOPILOT_MARKER на бэкенде):
 // такие сообщения пользователь не вводил, скрываем их из чата
-const AUTOPILOT_MARKER = "[АВТОПРОДОЛЖЕНИЕ]";
+const AUTOPILOT_MARKER = '[АВТОПРОДОЛЖЕНИЕ]';
 
 function isAutopilotMessage(m: MessageDTO): boolean {
-  return m.role === "user" && m.content.startsWith(AUTOPILOT_MARKER);
+  return m.role === 'user' && m.content.startsWith(AUTOPILOT_MARKER);
 }
 
 export interface AgentSettingsState {
@@ -21,7 +31,7 @@ export interface AgentSettingsState {
   top_p: number;
   max_tokens: number;
   stop: string[];
-  context_strategy: "none" | "summary" | "sliding" | "facts";
+  context_strategy: 'none' | 'summary' | 'sliding' | 'facts';
   sliding_window: number;
   compaction_threshold: number;
 }
@@ -73,15 +83,15 @@ export interface AgentState {
   contextWindow: number;
 }
 
-const ACTIVE_KEY = "my-agent.activeAgentId";
-const LAST_MODEL_KEY = "my-agent.lastModel";
+const ACTIVE_KEY = 'my-agent.activeAgentId';
+const LAST_MODEL_KEY = 'my-agent.lastModel';
 
 function stateFromDTO(dto: AgentDTO): AgentState {
   return {
     id: dto.id,
     name: dto.name,
     model: dto.model,
-    projectId: dto.project_id ?? "",
+    projectId: dto.project_id ?? '',
     settings: { ...dto.settings, stop: [...dto.settings.stop] },
     systemPromptPath: dto.system_prompt.path,
     systemPromptContent: dto.system_prompt.content,
@@ -90,12 +100,12 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     compacting: dto.compacting,
     cancelled: false,
     compactionNote: null,
-    scratchpad: dto.scratchpad ?? "",
+    scratchpad: dto.scratchpad ?? '',
     memorySuggestion: dto.memory_suggestion ?? null,
-    activeProfileId: dto.active_profile_id ?? "",
+    activeProfileId: dto.active_profile_id ?? '',
     task: dto.task ?? null,
     invariants: dto.invariants ?? [],
-    streamingReasoning: "",
+    streamingReasoning: '',
     subagents: [],
     sessionId: null,
     tokensIn: 0,
@@ -105,7 +115,7 @@ function stateFromDTO(dto: AgentDTO): AgentState {
   };
 }
 
-export const useAgentsStore = defineStore("agents", () => {
+export const useAgentsStore = defineStore('agents', () => {
   const agents = ref<Record<AgentId, AgentState>>({});
   const order = ref<AgentId[]>([]);
   const activeAgentId = ref<AgentId | null>(null);
@@ -113,12 +123,12 @@ export const useAgentsStore = defineStore("agents", () => {
   const longtermByProject = ref<Record<string, string[]>>({});
   /** Долговременная память активного агента (проект, к которому он привязан). */
   const longtermEntries = computed(() => {
-    const pid = agents.value[activeAgentId.value ?? ""]?.projectId ?? "";
+    const pid = agents.value[activeAgentId.value ?? '']?.projectId ?? '';
     return longtermByProject.value[pid] ?? [];
   });
 
   function projectOf(id: AgentId): string {
-    return agents.value[id]?.projectId ?? "";
+    return agents.value[id]?.projectId ?? '';
   }
 
   // AbortController текущего стрима на агента (не реактивно, ключи динамические).
@@ -272,41 +282,49 @@ export const useAgentsStore = defineStore("agents", () => {
 
   // --- стрим ---
   /** Запускает ход: POST messages + обработка SSE-событий в стор (§5.2). */
-  async function runStream(id: AgentId, content: string, onEvent?: (ev: StreamEvent) => void): Promise<void> {
+  async function runStream(
+    id: AgentId,
+    content: string,
+    onEvent?: (ev: StreamEvent) => void,
+  ): Promise<void> {
     const state = agents.value[id];
     if (state === undefined || state.streaming) return;
     state.streaming = true;
     state.cancelled = false;
     state.compactionNote = null;
-    state.streamingReasoning = "";
+    state.streamingReasoning = '';
     state.subagents = [];
     aborts.set(id, new AbortController());
-    let streamText = "";
+    let streamText = '';
     try {
       for await (const ev of api.sendMessage(id, content)) {
-        if (ev.event === "delta") {
+        if (ev.event === 'delta') {
           streamText += ev.content;
           applyDelta(state, streamText);
         } else {
           applyStreamEvent(state, ev);
-          if (ev.event === "done" || ev.event === "tool_message") {
-            streamText = ""; // финал/артефакт уже в истории; новый раунд — с нуля
-            state.streamingReasoning = "";
+          if (ev.event === 'done' || ev.event === 'tool_message') {
+            streamText = ''; // финал/артефакт уже в истории; новый раунд — с нуля
+            state.streamingReasoning = '';
           }
         }
         onEvent?.(ev);
       }
-      if (streamText !== "") {
+      if (streamText !== '') {
         // поток закрылся без done/cancelled/error — оставляем накопленное как assistant
-        state.history.push({ id: `local-${Date.now()}`, role: "assistant", content: streamText });
+        state.history.push({ id: `local-${Date.now()}`, role: 'assistant', content: streamText });
       }
     } catch (e) {
       const status = (e as ApiErrorLike).status;
-      pushError(state, status === undefined ? "network" : "http", e instanceof Error ? e.message : String(e));
+      pushError(
+        state,
+        status === undefined ? 'network' : 'http',
+        e instanceof Error ? e.message : String(e),
+      );
     } finally {
       state.streaming = false;
       state.compacting = false;
-      state.streamingReasoning = "";
+      state.streamingReasoning = '';
       aborts.delete(id);
     }
   }
@@ -331,7 +349,7 @@ export const useAgentsStore = defineStore("agents", () => {
   function resolveProject(projectId?: string): string {
     if (projectId !== undefined) return projectId;
     const id = activeAgentId.value;
-    return id !== null ? projectOf(id) : "";
+    return id !== null ? projectOf(id) : '';
   }
 
   function applyLongterm(dto: LongTermDTO): void {
@@ -412,33 +430,49 @@ export const useAgentsStore = defineStore("agents", () => {
     upsert(await api.taskCommand(id, body));
   }
 
-  async function startTask(id: AgentId, description: string, steps: string[], expectedAction?: string, validationSteps?: string[]): Promise<void> {
-    await runTaskCommand(id, { operation: "start", description, steps, validation_steps: validationSteps, expected_action: expectedAction });
+  async function startTask(
+    id: AgentId,
+    description: string,
+    steps: string[],
+    expectedAction?: string,
+    validationSteps?: string[],
+  ): Promise<void> {
+    await runTaskCommand(id, {
+      operation: 'start',
+      description,
+      steps,
+      validation_steps: validationSteps,
+      expected_action: expectedAction,
+    });
   }
 
-  async function setTaskPhase(id: AgentId, phase: TaskPhase, expectedAction?: string): Promise<void> {
-    await runTaskCommand(id, { operation: "set_phase", phase, expected_action: expectedAction });
+  async function setTaskPhase(
+    id: AgentId,
+    phase: TaskPhase,
+    expectedAction?: string,
+  ): Promise<void> {
+    await runTaskCommand(id, { operation: 'set_phase', phase, expected_action: expectedAction });
   }
 
   /** Пользователь подтвердил план — переход «планирование» → «выполнение». */
   async function confirmPlan(id: AgentId): Promise<void> {
-    await runTaskCommand(id, { operation: "confirm_plan" });
+    await runTaskCommand(id, { operation: 'confirm_plan' });
   }
 
   async function advanceTaskStep(id: AgentId, expectedAction?: string, done = true): Promise<void> {
-    await runTaskCommand(id, { operation: "advance", expected_action: expectedAction, done });
+    await runTaskCommand(id, { operation: 'advance', expected_action: expectedAction, done });
   }
 
   async function pauseTask(id: AgentId): Promise<void> {
-    await runTaskCommand(id, { operation: "pause" });
+    await runTaskCommand(id, { operation: 'pause' });
   }
 
   async function resumeTask(id: AgentId): Promise<void> {
-    await runTaskCommand(id, { operation: "resume" });
+    await runTaskCommand(id, { operation: 'resume' });
   }
 
   async function resetTask(id: AgentId): Promise<void> {
-    await runTaskCommand(id, { operation: "reset" });
+    await runTaskCommand(id, { operation: 'reset' });
   }
 
   return {
@@ -489,65 +523,65 @@ interface ApiErrorLike {
  */
 export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
   switch (ev.event) {
-    case "user_message":
+    case 'user_message':
       if (!isAutopilotMessage(ev.message)) state.history.push(ev.message);
       break;
-    case "compaction_started":
+    case 'compaction_started':
       state.compacting = true;
       break;
-    case "compaction_done":
+    case 'compaction_done':
       state.compacting = false;
       state.compactionNote =
         `⇄ Контекст сжат: -${ev.removed} удалено, +${ev.summary_tokens} саммари ` +
         `(${Math.round(ev.pct_before * 100)}% → ${Math.round(ev.pct_after * 100)}%)`;
       break;
-    case "reasoning_delta":
+    case 'reasoning_delta':
       // размышления thinking-модели: копим и складываем в стрим-сообщение
       state.streamingReasoning += ev.content;
       reasoningToStream(state, state.streamingReasoning);
       break;
-    case "tool_message":
+    case 'tool_message':
       // артефакт tool-раунда (assistant с tool_calls или результат инструмента):
       // replace стрим-заглушки либо push — порядок истории совпадает с бэкендом
       upsertDone(state, ev.message);
       break;
-    case "scratchpad":
+    case 'scratchpad':
       state.scratchpad = ev.content;
       break;
-    case "task":
+    case 'task':
       state.task = ev.task;
       break;
-    case "invariants":
+    case 'invariants':
       state.invariants = ev.invariants;
       break;
-    case "subagent_started":
+    case 'subagent_started':
       state.subagents.push({
         profile: ev.profile,
-        text: "",
+        text: '',
         done: false,
         anchor: state.history.length,
       });
       break;
-    case "subagent_delta": {
+    case 'subagent_delta': {
       const block = state.subagents[state.subagents.length - 1];
       if (block !== undefined && block.profile === ev.profile) block.text += ev.content;
       break;
     }
-    case "subagent_done": {
+    case 'subagent_done': {
       const block = state.subagents[state.subagents.length - 1];
       if (block !== undefined && block.profile === ev.profile) block.done = true;
       break;
     }
-    case "done":
+    case 'done':
       upsertDone(state, ev.message);
       break;
-    case "cancelled":
+    case 'cancelled':
       state.cancelled = true;
       break;
-    case "memory_suggestion":
+    case 'memory_suggestion':
       state.memorySuggestion = ev.content;
       break;
-    case "error":
+    case 'error':
       pushError(state, ev.kind, ev.detail);
       break;
     default:
@@ -557,8 +591,8 @@ export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
 
 function applyDelta(state: AgentState, fullText: string): void {
   const last = state.history[state.history.length - 1];
-  if (last === undefined || last.role !== "assistant") {
-    state.history.push({ id: `stream-${state.id}`, role: "assistant", content: fullText });
+  if (last === undefined || last.role !== 'assistant') {
+    state.history.push({ id: `stream-${state.id}`, role: 'assistant', content: fullText });
   } else {
     last.content = fullText;
   }
@@ -567,10 +601,10 @@ function applyDelta(state: AgentState, fullText: string): void {
 /** Размышления пишутся в существующее стрим-сообщение или открывают новое (до контента). */
 function reasoningToStream(state: AgentState, reasoning: string): void {
   const last = state.history[state.history.length - 1];
-  if (last !== undefined && last.role === "assistant") {
+  if (last !== undefined && last.role === 'assistant') {
     last.reasoning = reasoning;
   } else {
-    state.history.push({ id: `stream-${state.id}`, role: "assistant", content: "", reasoning });
+    state.history.push({ id: `stream-${state.id}`, role: 'assistant', content: '', reasoning });
   }
 }
 
@@ -581,14 +615,15 @@ function upsertDone(state: AgentState, message: MessageDTO): void {
     state.history[idx] = message;
   } else {
     const last = state.history[state.history.length - 1];
-    if (last !== undefined && last.id.startsWith("stream-")) {
+    if (last?.id.startsWith('stream-')) {
       state.history[state.history.length - 1] = message; // заменяем стрим-заглушку финальным
     } else {
       state.history.push(message);
     }
   }
   const u = message.usage;
-  if (u != null) { // null у tool_message (usage нет) — не должен ронять ход
+  if (u != null) {
+    // null у tool_message (usage нет) — не должен ронять ход
     state.tokensIn += u.prompt_tokens ?? 0;
     state.tokensOut += u.completion_tokens ?? 0;
   }
@@ -599,7 +634,7 @@ function upsertDone(state: AgentState, message: MessageDTO): void {
 function pushError(state: AgentState, kind: string, detail: string): void {
   state.history.push({
     id: `err-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    role: "system",
+    role: 'system',
     content: detail,
     error: { kind, detail },
   });

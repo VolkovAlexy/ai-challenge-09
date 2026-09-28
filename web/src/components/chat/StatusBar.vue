@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { NProgress } from "naive-ui";
-import { useAgentsStore } from "@/stores/agents";
-import { useConfigStore } from "@/stores/config";
+import { NProgress } from 'naive-ui';
+import { computed } from 'vue';
+import { useAgentsStore } from '@/stores/agents';
+import { useConfigStore } from '@/stores/config';
 
 const store = useAgentsStore();
 const configStore = useConfigStore();
@@ -21,19 +21,15 @@ const overThreshold = computed(() => pct.value > threshold.value);
 
 /** спиннер во время стрима — поверх информации о контексте, без слова «стрим» */
 const showSpinner = computed(
-  () =>
-    agent.value !== null &&
-    agent.value.streaming &&
-    !agent.value.cancelled &&
-    !agent.value.compacting,
+  () => agent.value?.streaming && !agent.value.cancelled && !agent.value.compacting,
 );
 
 const statusText = computed(() => {
   const a = agent.value;
-  if (a === null) return "";
-  if (a.compacting) return "сжимаю контекст…";
-  if (a.streaming && a.cancelled) return "останавливаю…";
-  return "";
+  if (a === null) return '';
+  if (a.compacting) return 'сжимаю контекст…';
+  if (a.streaming && a.cancelled) return 'останавливаю…';
+  return '';
 });
 </script>
 

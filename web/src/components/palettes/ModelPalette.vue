@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { NModal, NInput, NList, NListItem, NScrollbar } from "naive-ui";
-import { useConfigStore } from "@/stores/config";
+import { NInput, NList, NListItem, NModal, NScrollbar } from 'naive-ui';
+import { computed, ref } from 'vue';
+import { useConfigStore } from '@/stores/config';
 
 const props = defineProps<{ current: string | null }>();
 const emit = defineEmits<{ select: [value: string | null] }>();
 
 const configStore = useConfigStore();
-const filter = ref("");
+const filter = ref('');
 
 const items = computed(() => {
   const f = filter.value.toLowerCase();
   return configStore
     .allModelIds()
-    .filter((m) => f === "" || m.toLowerCase().includes(f))
+    .filter((m) => f === '' || m.toLowerCase().includes(f))
     .map((m) => ({ value: m, label: m }));
 });
 </script>

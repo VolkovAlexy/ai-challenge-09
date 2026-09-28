@@ -1,30 +1,115 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { NButton, NScrollbar, NDivider, NDropdown, NInput } from "naive-ui";
-import type { ProjectDTO, SessionInfoDTO } from "@/api/types";
-import { useProjectsStore } from "@/stores/projects";
-import { useSessionsStore } from "@/stores/sessions";
+import { DownloadOutline, FolderOpenOutline, TrashOutline } from '@vicons/ionicons5';
+import {
+  NButton,
+  NCheckbox,
+  NDivider,
+  NDropdown,
+  NIcon,
+  NInput,
+  NScrollbar,
+  useMessage,
+} from 'naive-ui';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import type { ProjectDTO, SessionInfoDTO } from '@/api/types';
+import { useProjectsStore } from '@/stores/projects';
+import { useSessionsStore } from '@/stores/sessions';
 
 defineProps<{
   activeSessionId: string | null;
 }>();
 
 const emit = defineEmits<{
-  (e: "select", sessionId: string): void;
-  (e: "newChat", projectId?: string): void;
-  (e: "branch", sessionId: string): void;
-  (e: "delete", sessionId: string): void;
-  (e: "rename", sessionId: string, title: string): void;
-  (e: "createProject", name: string): void;
-  (e: "renameProject", projectId: string, name: string): void;
-  (e: "deleteProject", projectId: string): void;
-  (e: "selectProject", projectId: string): void;
-  (e: "memory", projectId: string): void;
+  (e: 'select', sessionId: string): void;
+  (e: 'newChat', projectId?: string): void;
+  (e: 'branch', sessionId: string): void;
+  (e: 'delete', sessionId: string): void;
+  (e: 'rename', sessionId: string, title: string): void;
+  (e: 'createProject', name: string): void;
+  (e: 'renameProject', projectId: string, name: string): void;
+  (e: 'deleteProject', projectId: string): void;
+  (e: 'selectProject', projectId: string): void;
+  (e: 'memory', projectId: string): void;
+  (e: 'batchDelete', ids: string[]): void;
 }>();
 
 const projectsStore = useProjectsStore();
 const sessionsStore = useSessionsStore();
 const loaded = ref(false);
+const message = useMessage();
+
+/** Набор id выбранных сессий (reactive Set). */
+const selected = ref<Set<string>>(new Set());
+const selectedCount = computed(() => selected.value.size);
+
+const allSelected = computed(() => {
+  const ids = sessionsStore.sessions.map((s) => s.id);
+  return ids.length > 0 && ids.every((id) => selected.value.has(id));
+});
+
+const someSelected = computed(() => selectedCount.value > 0 && !allSelected.value);
+
+function isSelected(id: string): boolean {
+  return selected.value.has(id);
+}
+
+function toggleSelect(id: string): void {
+  const next = new Set(selected.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  selected.value = next;
+}
+
+function onSelectAll(value: boolean): void {
+  selected.value = value ? new Set(sessionsStore.sessions.map((s) => s.id)) : new Set();
+}
+
+function clearSelection(): void {
+  selected.value = new Set();
+}
+
+/** Вычищает из выборки сессии, исчезнувшие из списка (удалены/перезагружены). */
+watch(
+  () => sessionsStore.sessions,
+  (sessions) => {
+    const valid = new Set(sessions.map((s) => s.id));
+    const next = new Set([...selected.value].filter((id) => valid.has(id)));
+    if (next.size !== selected.value.size) selected.value = next;
+  },
+);
+
+const moveOptions = computed(() =>
+  projectsStore.projects.map((p) => ({ label: p.name, key: p.id })),
+);
+
+function onBatchDelete(): void {
+  if (selected.value.size === 0) return;
+  emit('batchDelete', [...selected.value]);
+}
+
+async function onBatchExport(): Promise<void> {
+  if (selected.value.size === 0) return;
+  const ids = [...selected.value];
+  try {
+    const paths = await sessionsStore.exportBatch(ids);
+    message.success(`Экспортировано сессий: ${paths.length}`);
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : 'не удалось экспортировать');
+  }
+}
+
+async function onBatchMove(projectId: string): Promise<void> {
+  if (selected.value.size === 0) return;
+  const ids = [...selected.value];
+  try {
+    await sessionsStore.moveBatch(ids, projectId);
+    await projectsStore.load();
+    clearSelection();
+    message.success('Сессии перемещены');
+  } catch (e) {
+    message.error(e instanceof Error ? e.message : 'не удалось переместить');
+  }
+}
 
 onMounted(async () => {
   await Promise.all([projectsStore.load(), sessionsStore.loadAll()]);
@@ -40,37 +125,42 @@ onUnmounted(() => {
 const byProject = computed<Record<string, SessionInfoDTO[]>>(() => {
   const groups: Record<string, SessionInfoDTO[]> = {};
   for (const s of sessionsStore.sessions) {
-    const pid = s.project_id ?? "";
-    (groups[pid] ??= []).push(s);
+    const pid = s.project_id ?? '';
+    let group = groups[pid];
+    if (group === undefined) {
+      group = [];
+      groups[pid] = group;
+    }
+    group.push(s);
   }
   return groups;
 });
 
 const projectOptions = (project: ProjectDTO) => [
-  { label: "Новый чат", key: "new-chat" },
-  { label: "Память", key: "memory" },
-  { label: "Переименовать", key: "rename" },
-  { label: "Удалить", key: "delete", disabled: project.id === "default" },
+  { label: 'Новый чат', key: 'new-chat' },
+  { label: 'Память', key: 'memory' },
+  { label: 'Переименовать', key: 'rename' },
+  { label: 'Удалить', key: 'delete', disabled: project.id === 'default' },
 ];
 
 const sessionCardOptions = [
-  { label: "Бранч", key: "branch" },
-  { label: "Изменить описание", key: "rename" },
-  { label: "Удалить", key: "delete" },
+  { label: 'Бранч', key: 'branch' },
+  { label: 'Изменить описание', key: 'rename' },
+  { label: 'Удалить', key: 'delete' },
 ];
 
 const creating = ref(false);
-const createDraft = ref("");
+const createDraft = ref('');
 const renameProjectId = ref<string | null>(null);
-const renameDraft = ref("");
+const renameDraft = ref('');
 const editingSessionId = ref<string | null>(null);
-const editDraft = ref("");
+const editDraft = ref('');
 
 function onProjectAction(key: string, project: ProjectDTO): void {
-  if (key === "new-chat") emit("newChat", project.id);
-  else if (key === "memory") emit("memory", project.id);
-  else if (key === "rename") startProjectRename(project);
-  else if (key === "delete") emit("deleteProject", project.id);
+  if (key === 'new-chat') emit('newChat', project.id);
+  else if (key === 'memory') emit('memory', project.id);
+  else if (key === 'rename') startProjectRename(project);
+  else if (key === 'delete') emit('deleteProject', project.id);
 }
 
 function startProjectRename(project: ProjectDTO): void {
@@ -86,32 +176,32 @@ function confirmProjectRename(project: ProjectDTO): void {
   if (renameProjectId.value !== project.id) return;
   const name = renameDraft.value.trim();
   renameProjectId.value = null;
-  if (name !== "" && name !== project.name) emit("renameProject", project.id, name);
+  if (name !== '' && name !== project.name) emit('renameProject', project.id, name);
 }
 
 function startCreate(): void {
   creating.value = true;
-  createDraft.value = "";
+  createDraft.value = '';
 }
 
 function cancelCreate(): void {
   creating.value = false;
-  createDraft.value = "";
+  createDraft.value = '';
 }
 
 function confirmCreate(): void {
   if (!creating.value) return;
   const name = createDraft.value.trim();
   creating.value = false;
-  if (name === "") return;
-  emit("createProject", name);
-  createDraft.value = "";
+  if (name === '') return;
+  emit('createProject', name);
+  createDraft.value = '';
 }
 
 function onCardAction(key: string, session: SessionInfoDTO): void {
-  if (key === "branch") emit("branch", session.id);
-  else if (key === "rename") startRename(session);
-  else if (key === "delete") emit("delete", session.id);
+  if (key === 'branch') emit('branch', session.id);
+  else if (key === 'rename') startRename(session);
+  else if (key === 'delete') emit('delete', session.id);
 }
 
 function startRename(session: SessionInfoDTO): void {
@@ -127,27 +217,27 @@ function confirmRename(session: SessionInfoDTO): void {
   if (editingSessionId.value !== session.id) return;
   const title = editDraft.value.trim();
   editingSessionId.value = null;
-  if (title !== session.title) emit("rename", session.id, title);
+  if (title !== session.title) emit('rename', session.id, title);
 }
 
 function onProjectClick(project: ProjectDTO): void {
   projectsStore.setActive(project.id);
   projectsStore.toggle(project.id);
-  emit("selectProject", project.id);
+  emit('selectProject', project.id);
 }
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const hours = String(d.getHours()).padStart(2, "0");
-  const mins = String(d.getMinutes()).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const mins = String(d.getMinutes()).padStart(2, '0');
   return `${day}.${month} ${hours}:${mins}`;
 }
 
 function truncateModel(model: string | undefined): string {
-  if (!model) return "";
-  const parts = model.split(":");
+  if (!model) return '';
+  const parts = model.split(':');
   return parts.length > 1 ? parts[1] : parts[0];
 }
 </script>
@@ -157,6 +247,36 @@ function truncateModel(model: string | undefined): string {
     <div class="sidebar-header">
       <span>Проекты</span>
       <n-button size="tiny" quaternary @click="startCreate">+ Проект</n-button>
+    </div>
+    <n-divider style="margin: 0;" />
+
+    <div class="sidebar-select-bar">
+      <n-checkbox
+        :checked="allSelected"
+        :indeterminate="someSelected"
+        @update:checked="onSelectAll"
+      >
+        <span class="select-all-label">Все сессии</span>
+      </n-checkbox>
+      <template v-if="selectedCount > 0">
+        <span class="selected-count">{{ selectedCount }}</span>
+        <n-button size="tiny" quaternary title="Удалить" @click="onBatchDelete">
+          <template #icon><n-icon><TrashOutline /></n-icon></template>
+        </n-button>
+        <n-button size="tiny" quaternary title="Экспортировать" @click="onBatchExport">
+          <template #icon><n-icon><DownloadOutline /></n-icon></template>
+        </n-button>
+        <n-dropdown
+          :options="moveOptions"
+          trigger="click"
+          placement="bottom-end"
+          @select="(key: string) => onBatchMove(key)"
+        >
+          <n-button size="tiny" quaternary title="Переместить">
+            <template #icon><n-icon><FolderOpenOutline /></n-icon></template>
+          </n-button>
+        </n-dropdown>
+      </template>
     </div>
     <n-divider style="margin: 0;" />
 
@@ -245,6 +365,13 @@ function truncateModel(model: string | undefined): string {
                 />
               </template>
               <template v-else>
+                <span class="session-check" @click.stop>
+                  <n-checkbox
+                    size="small"
+                    :checked="isSelected(session.id)"
+                    @update:checked="toggleSelect(session.id)"
+                  />
+                </span>
                 <div class="session-card-title">
                   <span class="session-title-text">{{ session.title }}</span>
                   <span
@@ -419,12 +546,21 @@ function truncateModel(model: string | undefined): string {
 
 .session-card {
   position: relative;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 28px;
   margin: 2px 0;
   border-radius: 6px;
   cursor: pointer;
   border: 1px solid transparent;
   transition: background 0.15s, border-color 0.15s;
+}
+
+.session-check {
+  position: absolute;
+  left: 6px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
 }
 
 .session-card:hover {
@@ -518,5 +654,26 @@ function truncateModel(model: string | undefined): string {
 .project-new-chat {
   flex-shrink: 0;
   margin-left: auto;
+}
+
+/* --- панель массового выбора сессий --- */
+.sidebar-select-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+}
+
+.select-all-label {
+  font-size: 12px;
+  color: #888;
+}
+
+.selected-count {
+  font-size: 12px;
+  color: #7aa2f7;
+  min-width: 16px;
+  text-align: center;
 }
 </style>

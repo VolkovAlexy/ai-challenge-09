@@ -1,9 +1,9 @@
 // DTO и события стрима — зеркало контракта бэкенда (WEB_UI.MD §5).
 // Ключи API никогда не приходят на фронтенд — в этих типах их нет.
 
-export type Role = "user" | "assistant" | "system" | "tool";
+export type Role = 'user' | 'assistant' | 'system' | 'tool';
 
-export type ContextStrategy = "none" | "summary" | "sliding" | "facts";
+export type ContextStrategy = 'none' | 'summary' | 'sliding' | 'facts';
 
 export interface UsageDTO {
   prompt_tokens?: number;
@@ -27,8 +27,6 @@ export interface MessageDTO {
   error?: { kind: string; detail: string };
 }
 
-
-
 export interface AgentSettingsDTO {
   temperature: number;
   top_p: number;
@@ -39,7 +37,7 @@ export interface AgentSettingsDTO {
   compaction_threshold: number;
 }
 
-export type TaskPhase = "idle" | "planning" | "execution" | "validation" | "done";
+export type TaskPhase = 'idle' | 'planning' | 'execution' | 'validation' | 'done';
 
 /** Состояние задачи — конечный автомат (этап, шаг, ожидаемое действие). */
 export interface TaskStateDTO {
@@ -134,7 +132,7 @@ export interface ProfileDTO {
   content: string;
 }
 
-export type McpStatus = "connecting" | "available" | "unavailable";
+export type McpStatus = 'connecting' | 'available' | 'unavailable';
 
 /** Описание одного инструмента MCP-сервера. */
 export interface McpToolDTO {
@@ -145,7 +143,7 @@ export interface McpToolDTO {
 /** Состояние MCP-сервера для панели (команда/URL не отдаются). */
 export interface McpDTO {
   name: string;
-  transport: "stdio" | "http";
+  transport: 'stdio' | 'http';
   status: McpStatus;
   enabled: boolean;
   tool_count: number;
@@ -172,14 +170,14 @@ export interface PatchAgentDTO {
 }
 
 export type TaskCommandOperation =
-  | "start"
-  | "set_phase"
-  | "advance"
-  | "pause"
-  | "resume"
-  | "reset"
-  | "set_expected_action"
-  | "confirm_plan";
+  | 'start'
+  | 'set_phase'
+  | 'advance'
+  | 'pause'
+  | 'resume'
+  | 'reset'
+  | 'set_expected_action'
+  | 'confirm_plan';
 
 /** Тело POST /api/agents/{id}/task — команда управления конечным автоматом. */
 export interface TaskCommandRequest {
@@ -195,22 +193,28 @@ export interface TaskCommandRequest {
 
 /** События SSE-потока ответа (§5.2). Терминалы: done / cancelled / error. */
 export type StreamEvent =
-  | { event: "user_message"; message: MessageDTO }
-  | { event: "compaction_started" }
-  | { event: "compaction_done"; removed: number; summary_tokens: number; pct_before: number; pct_after: number }
-  | { event: "delta"; content: string }
-  | { event: "reasoning_delta"; content: string }
-  | { event: "tool_message"; message: MessageDTO }
-  | { event: "subagent_started"; profile: string }
-  | { event: "subagent_delta"; profile: string; content: string }
-  | { event: "subagent_done"; profile: string }
-  | { event: "scratchpad"; content: string }
-  | { event: "task"; task: TaskStateDTO | null }
-  | { event: "invariants"; invariants: string[] }
-  | { event: "done"; message: MessageDTO }
-  | { event: "cancelled" }
-  | { event: "memory_suggestion"; content: string }
-  | { event: "error"; kind: "http" | "network"; detail: string };
+  | { event: 'user_message'; message: MessageDTO }
+  | { event: 'compaction_started' }
+  | {
+      event: 'compaction_done';
+      removed: number;
+      summary_tokens: number;
+      pct_before: number;
+      pct_after: number;
+    }
+  | { event: 'delta'; content: string }
+  | { event: 'reasoning_delta'; content: string }
+  | { event: 'tool_message'; message: MessageDTO }
+  | { event: 'subagent_started'; profile: string }
+  | { event: 'subagent_delta'; profile: string; content: string }
+  | { event: 'subagent_done'; profile: string }
+  | { event: 'scratchpad'; content: string }
+  | { event: 'task'; task: TaskStateDTO | null }
+  | { event: 'invariants'; invariants: string[] }
+  | { event: 'done'; message: MessageDTO }
+  | { event: 'cancelled' }
+  | { event: 'memory_suggestion'; content: string }
+  | { event: 'error'; kind: 'http' | 'network'; detail: string };
 
 export interface LongTermDTO {
   /** пустой для SQL-хранилища (записи в longterm_entries) */

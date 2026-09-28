@@ -274,6 +274,28 @@ def create_app(state: WebState) -> FastAPI:
             raise HTTPException(status_code=404, detail="сессия не найдена")
         return {"ok": True}
 
+    @app.post("/api/sessions/batch/delete")
+    def batch_delete_sessions(body: dto.BatchSessionsRequest) -> dict[str, int]:
+        return {"deleted": state.batch_delete_sessions(body.ids)}
+
+    @app.post("/api/sessions/batch/move")
+    def batch_move_sessions(body: dto.BatchMoveSessionsRequest) -> dict[str, int]:
+        try:
+            moved = state.batch_move_sessions(body.ids, body.project_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"moved": moved}
+
+    @app.post("/api/sessions/batch/export")
+    def batch_export_sessions(body: dto.BatchSessionsRequest) -> dict[str, list[str]]:
+        paths: list[str] = []
+        for index, session_id in enumerate(body.ids):
+            if state.store.get(session_id) is None:
+                continue
+            target = SESSIONS_DIR / f"{_now_stamp()}-{index}.jsonl"
+            paths.append(str(state.store.export(session_id, target)))
+        return {"paths": paths}
+
     @app.post("/api/scheduler/notify")
     def scheduler_notify(body: dto.SchedulerEventRequest) -> dict[str, bool]:
         state.handle_scheduler_event(body)

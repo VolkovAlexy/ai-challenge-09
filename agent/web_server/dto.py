@@ -253,6 +253,19 @@ class ExportRequest(BaseModel):
     path: str | None = None
 
 
+class BatchSessionsRequest(BaseModel):
+    """Набор идентификаторов сессий для групповой операции (delete/export)."""
+
+    ids: list[str]
+
+
+class BatchMoveSessionsRequest(BaseModel):
+    """Перенос нескольких сессий в существующий проект."""
+
+    ids: list[str]
+    project_id: str
+
+
 class RememberRequest(BaseModel):
     content: str
 

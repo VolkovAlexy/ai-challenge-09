@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { NModal, NInput, NList, NListItem, NScrollbar } from "naive-ui";
-import type { ChatCommand } from "@/commands/registry";
+import { NInput, NList, NListItem, NModal, NScrollbar } from 'naive-ui';
+import { computed, ref } from 'vue';
+import type { ChatCommand } from '@/commands/registry';
 
 const props = defineProps<{ commands: ChatCommand[] }>();
 const emit = defineEmits<{ select: [value: string | null] }>();
 
-const filter = ref("");
+const filter = ref('');
 
 const items = computed(() => {
   const f = filter.value.toLowerCase();
   return props.commands
-    .filter((c) => f === "" || c.name.includes(f) || c.description.toLowerCase().includes(f))
+    .filter((c) => f === '' || c.name.includes(f) || c.description.toLowerCase().includes(f))
     .map((c) => ({
       value: `/${c.name}`,
       label: `/${c.name} ${c.args_spec}`.trim(),

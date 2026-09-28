@@ -1,10 +1,10 @@
 // MCP-серверы: список и глобальный вкл/выкл (хранится только в оперативке).
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import { api } from "@/api/client";
-import type { McpDTO } from "@/api/types";
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
+import { api } from '@/api/client';
+import type { McpDTO } from '@/api/types';
 
-export const useMcpStore = defineStore("mcp", () => {
+export const useMcpStore = defineStore('mcp', () => {
   const servers = ref<McpDTO[]>([]);
   const loaded = ref(false);
   const loadError = ref<string | null>(null);

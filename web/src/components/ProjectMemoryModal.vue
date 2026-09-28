@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { NButton, NInput, NScrollbar } from "naive-ui";
-import type { LongTermDTO } from "@/api/types";
-import { api } from "@/api/client";
+import { NButton, NInput, NScrollbar } from 'naive-ui';
+import { onMounted, ref } from 'vue';
+import { api } from '@/api/client';
+import type { LongTermDTO } from '@/api/types';
 
 const props = defineProps<{
   projectId: string;
@@ -10,17 +10,17 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "close"): void;
-  (e: "updated"): void;
+  (e: 'close'): void;
+  (e: 'updated'): void;
 }>();
 
 const dto = ref<LongTermDTO | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
-const newText = ref("");
+const newText = ref('');
 const adding = ref(false);
 const editIndex = ref<number | null>(null);
-const editDraft = ref("");
+const editDraft = ref('');
 
 async function reload(): Promise<void> {
   loading.value = true;
@@ -43,8 +43,8 @@ async function addEntry(): Promise<void> {
   error.value = null;
   try {
     dto.value = await api.remember(content, props.projectId);
-    newText.value = "";
-    emit("updated");
+    newText.value = '';
+    emit('updated');
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   } finally {
@@ -54,7 +54,7 @@ async function addEntry(): Promise<void> {
 
 function startEdit(index: number): void {
   editIndex.value = index;
-  editDraft.value = dto.value?.entries[index] ?? "";
+  editDraft.value = dto.value?.entries[index] ?? '';
 }
 
 async function saveEdit(): Promise<void> {
@@ -79,7 +79,7 @@ async function removeEntry(index: number): Promise<void> {
   error.value = null;
   try {
     dto.value = await api.forget(index, props.projectId);
-    emit("updated");
+    emit('updated');
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
   }

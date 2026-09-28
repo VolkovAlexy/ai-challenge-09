@@ -1,12 +1,12 @@
-import { computed, ref } from "vue";
-import { defineStore } from "pinia";
-import type { ProjectDTO } from "@/api/types";
-import { api } from "@/api/client";
+import { defineStore } from 'pinia';
+import { computed, ref } from 'vue';
+import { api } from '@/api/client';
+import type { ProjectDTO } from '@/api/types';
 
-const ACTIVE_PROJECT_KEY = "my-agent.activeProjectId";
+const ACTIVE_PROJECT_KEY = 'my-agent.activeProjectId';
 
 /** Проекты: список, активный проект, раскрытые аккордеоны. */
-export const useProjectsStore = defineStore("projects", () => {
+export const useProjectsStore = defineStore('projects', () => {
   const projects = ref<ProjectDTO[]>([]);
   const activeProjectId = ref<string | null>(null);
   const expanded = ref<Record<string, boolean>>({});
@@ -36,7 +36,8 @@ export const useProjectsStore = defineStore("projects", () => {
   }
 
   function syncStorage(): void {
-    if (activeProjectId.value !== null) localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId.value);
+    if (activeProjectId.value !== null)
+      localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId.value);
     else localStorage.removeItem(ACTIVE_PROJECT_KEY);
   }
 
@@ -52,7 +53,7 @@ export const useProjectsStore = defineStore("projects", () => {
     } else {
       activeProjectId.value = projects.value[0].id;
     }
-    expand(activeProjectId.value ?? "");
+    expand(activeProjectId.value ?? '');
     syncStorage();
   }
 

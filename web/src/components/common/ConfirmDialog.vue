@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NModal, NButton, NSpace } from "naive-ui";
+import { NButton, NModal, NSpace } from 'naive-ui';
 
 const props = defineProps<{ text: string }>();
 const emit = defineEmits<{ answer: [ok: boolean] }>();

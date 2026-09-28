@@ -1,22 +1,22 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
-import { NModal, NInput, NList, NListItem, NScrollbar } from "naive-ui";
-import { useSessionsStore } from "@/stores/sessions";
+import { NInput, NList, NListItem, NModal, NScrollbar } from 'naive-ui';
+import { computed, ref } from 'vue';
+import { useSessionsStore } from '@/stores/sessions';
 
 const emit = defineEmits<{ select: [value: string | null] }>();
 
 const sessionsStore = useSessionsStore();
 void sessionsStore.load();
-const filter = ref("");
+const filter = ref('');
 
 const items = computed(() => {
   const f = filter.value.toLowerCase();
   return sessionsStore.sessions
-    .filter((s) => f === "" || s.title.toLowerCase().includes(f) || s.id.toLowerCase().includes(f))
+    .filter((s) => f === '' || s.title.toLowerCase().includes(f) || s.id.toLowerCase().includes(f))
     .map((s) => ({
       value: s.id,
       label: s.title,
-      hint: new Date(s.updated_at).toLocaleString("ru-RU"),
+      hint: new Date(s.updated_at).toLocaleString('ru-RU'),
     }));
 });
 </script>

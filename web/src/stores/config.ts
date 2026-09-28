@@ -1,10 +1,10 @@
 // Конфиг с бэкенда: провайдеры, модели, дефолты. Только чтение.
-import { defineStore } from "pinia";
-import { ref } from "vue";
-import { api } from "@/api/client";
-import type { ConfigDTO } from "@/api/types";
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
+import { api } from '@/api/client';
+import type { ConfigDTO } from '@/api/types';
 
-export const useConfigStore = defineStore("config", () => {
+export const useConfigStore = defineStore('config', () => {
   const config = ref<ConfigDTO | null>(null);
   const loaded = ref(false);
   const loadError = ref<string | null>(null);
@@ -34,8 +34,8 @@ export const useConfigStore = defineStore("config", () => {
   function contextWindowFor(model: string): number {
     const c = config.value;
     if (c === null) return 0;
-    const [provider, ...rest] = model.split(":");
-    const m = rest.join(":");
+    const [provider, ...rest] = model.split(':');
+    const m = rest.join(':');
     return c.providers[provider]?.models[m]?.context_window ?? c.context_window_default;
   }
 

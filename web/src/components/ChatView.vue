@@ -1,14 +1,14 @@
 <script setup lang="ts">
 // Композиция чата: лента + ввод + статус-бар + предложение памяти.
 // Память/настройки — в правой панели (RightPanel) с кнопками-иконками.
-import { computed } from "vue";
-import { useAgentsStore } from "@/stores/agents";
-import type { ChatCommand } from "@/commands/registry";
-import MessageList from "./chat/MessageList.vue";
-import ChatInput from "./chat/ChatInput.vue";
-import StatusBar from "./chat/StatusBar.vue";
-import MemorySuggestionBar from "./chat/MemorySuggestionBar.vue";
-import RightPanel from "./chat/RightPanel.vue";
+import { computed } from 'vue';
+import type { ChatCommand } from '@/commands/registry';
+import { useAgentsStore } from '@/stores/agents';
+import ChatInput from './chat/ChatInput.vue';
+import MemorySuggestionBar from './chat/MemorySuggestionBar.vue';
+import MessageList from './chat/MessageList.vue';
+import RightPanel from './chat/RightPanel.vue';
+import StatusBar from './chat/StatusBar.vue';
 
 const props = defineProps<{
   commands: ChatCommand[];

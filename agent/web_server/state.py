@@ -164,6 +164,28 @@ class WebState:
         """Удаляет сохранённую сессию из хранилища. True, если она была."""
         return self.store.delete(session_id)
 
+    def batch_delete_sessions(self, ids: list[str]) -> int:
+        """Удаляет несколько сохранённых сессий. Возвращает число удалённых."""
+        return sum(1 for session_id in ids if self.store.delete(session_id))
+
+    def batch_move_sessions(self, ids: list[str], project_id: str) -> int:
+        """Переносит несколько сессий в другой проект. KeyError — проект не найден."""
+        if self.store.get_project(project_id) is None:
+            raise KeyError(f"проект не найден: {project_id}")
+        moved = 0
+        for session_id in ids:
+            if not self.store.set_project_id(session_id, project_id):
+                continue
+            moved += 1
+            record = self._owner_record(session_id)
+            if record is not None:
+                record.agent.set_project(
+                    project_id, ProjectLongTermMemory(self.store, project_id)
+                )
+                record.project_id = project_id
+                self.persist(record)
+        return moved
+
     def branch_session(self, session_id: str) -> AgentRecord:
         """Создаёт нового агента-копию сессии (ветку от сохранённого чата).
 

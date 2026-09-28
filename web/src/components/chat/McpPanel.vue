@@ -2,9 +2,10 @@
 // Панель MCP: все сконфигурированные серверы, их статус (доступен/нет) и
 // глобальный вкл/выкл. Статус и вкл/выкл живут в сторе (оперативка бэкенда).
 // Клик по карточке раскрывает список инструментов этого сервера.
-import { computed, ref, watch } from "vue";
-import { NSwitch, NTag } from "naive-ui";
-import { useMcpStore } from "@/stores/mcp";
+
+import { NSwitch, NTag } from 'naive-ui';
+import { computed, ref, watch } from 'vue';
+import { useMcpStore } from '@/stores/mcp';
 
 const props = defineProps<{ active: boolean }>();
 
@@ -21,14 +22,14 @@ watch(
 );
 
 const STATUS_TEXT: Record<string, string> = {
-  connecting: "подключение…",
-  available: "доступен",
-  unavailable: "недоступен",
+  connecting: 'подключение…',
+  available: 'доступен',
+  unavailable: 'недоступен',
 };
 const STATUS_COLOR: Record<string, string> = {
-  connecting: "#e5c07b",
-  available: "#98c379",
-  unavailable: "#e06c75",
+  connecting: '#e5c07b',
+  available: '#98c379',
+  unavailable: '#e06c75',
 };
 
 /** раскрытые карточки (по имени сервера) */

@@ -2,11 +2,21 @@
 // Панель «Настройки» активного агента: параметры генерации, системный промпт,
 // стратегия контекста и facts-блок. Изменения сохраняются только в сессию агента
 // (PATCH /api/agents/{id}); глобальный config.json не трогается.
-import { computed, ref, watch } from "vue";
-import { NButton, NCollapse, NCollapseItem, NInput, NRadioButton, NRadioGroup, NSlider, NTooltip } from "naive-ui";
-import { api } from "@/api/client";
-import { useAgentsStore } from "@/stores/agents";
-import type { ContextStrategy } from "@/api/types";
+
+import {
+  NButton,
+  NCollapse,
+  NCollapseItem,
+  NInput,
+  NRadioButton,
+  NRadioGroup,
+  NSlider,
+  NTooltip,
+} from 'naive-ui';
+import { computed, ref, watch } from 'vue';
+import { api } from '@/api/client';
+import type { ContextStrategy } from '@/api/types';
+import { useAgentsStore } from '@/stores/agents';
 
 const props = defineProps<{ active: boolean }>();
 
@@ -14,19 +24,27 @@ const store = useAgentsStore();
 const agent = computed(() => store.activeAgent);
 
 // --- параметры генерации (черновик, применяется по кнопке) ---
-const temperature = ref("0.7");
-const topP = ref("1.0");
-const maxTokens = ref("4096");
-const stopStr = ref("");
-const contextStrategy = ref<ContextStrategy>("summary");
-const slidingWindow = ref("20");
+const temperature = ref('0.7');
+const topP = ref('1.0');
+const maxTokens = ref('4096');
+const stopStr = ref('');
+const contextStrategy = ref<ContextStrategy>('summary');
+const slidingWindow = ref('20');
 const compactionThreshold = ref(60); // в процентах (50–100)
 
 const strategyOptions: { value: ContextStrategy; label: string; tip: string }[] = [
-  { value: "none", label: "none", tip: "Вся история передаётся модели без сжатия." },
-  { value: "summary", label: "summary", tip: "История автоматически сжимается в саммари при заполнении окна." },
-  { value: "sliding", label: "sliding", tip: "Модели уходит только скользящее окно последних сообщений." },
-  { value: "facts", label: "facts", tip: "Факт-блок (ключ-значение) + скользящее окно." },
+  { value: 'none', label: 'none', tip: 'Вся история передаётся модели без сжатия.' },
+  {
+    value: 'summary',
+    label: 'summary',
+    tip: 'История автоматически сжимается в саммари при заполнении окна.',
+  },
+  {
+    value: 'sliding',
+    label: 'sliding',
+    tip: 'Модели уходит только скользящее окно последних сообщений.',
+  },
+  { value: 'facts', label: 'facts', tip: 'Факт-блок (ключ-значение) + скользящее окно.' },
 ];
 
 watch(
@@ -36,7 +54,7 @@ watch(
     temperature.value = String(s.temperature);
     topP.value = String(s.top_p);
     maxTokens.value = String(s.max_tokens);
-    stopStr.value = s.stop.join(", ");
+    stopStr.value = s.stop.join(', ');
     contextStrategy.value = s.context_strategy;
     slidingWindow.value = String(s.sliding_window);
     compactionThreshold.value = Math.round(s.compaction_threshold * 100);
@@ -57,16 +75,34 @@ async function saveSettings(): Promise<void> {
   const id = agent.value?.id;
   if (id === undefined) return;
   const t = numInRange(temperature.value, 0, 2);
-  if (t === null) { error.value = "temperature — число от 0 до 2"; return; }
+  if (t === null) {
+    error.value = 'temperature — число от 0 до 2';
+    return;
+  }
   const p = numInRange(topP.value, 0, 1);
-  if (p === null) { error.value = "top-p — число от 0 до 1"; return; }
+  if (p === null) {
+    error.value = 'top-p — число от 0 до 1';
+    return;
+  }
   const m = Math.trunc(Number(maxTokens.value));
-  if (Number.isNaN(m) || m <= 0) { error.value = "max-tokens — целое число > 0"; return; }
+  if (Number.isNaN(m) || m <= 0) {
+    error.value = 'max-tokens — целое число > 0';
+    return;
+  }
   const w = Math.trunc(Number(slidingWindow.value));
-  if (Number.isNaN(w) || w <= 0) { error.value = "sliding_window — целое число > 0"; return; }
+  if (Number.isNaN(w) || w <= 0) {
+    error.value = 'sliding_window — целое число > 0';
+    return;
+  }
   const ct = compactionThreshold.value / 100;
-  if (ct < 0.5 || ct > 1.0) { error.value = "compaction_threshold — от 50% до 100%"; return; }
-  const stop = stopStr.value.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  if (ct < 0.5 || ct > 1.0) {
+    error.value = 'compaction_threshold — от 50% до 100%';
+    return;
+  }
+  const stop = stopStr.value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s !== '');
   error.value = null;
   saving.value = true;
   try {
@@ -87,15 +123,15 @@ async function saveSettings(): Promise<void> {
 }
 
 // --- системный промпт (путь + просмотр содержимого) ---
-const promptPath = ref("");
-const promptContent = ref("");
+const promptPath = ref('');
+const promptContent = ref('');
 
 watch(
   () => [agent.value?.systemPromptPath, agent.value?.systemPromptContent] as const,
   ([path, content]) => {
     if (path === undefined) return;
     promptPath.value = path;
-    promptContent.value = content ?? "";
+    promptContent.value = content ?? '';
   },
   { immediate: true },
 );
@@ -104,7 +140,10 @@ const savingPrompt = ref(false);
 
 async function savePromptPath(): Promise<void> {
   const path = promptPath.value.trim();
-  if (path === "") { error.value = "путь к системному промпту не может быть пустым"; return; }
+  if (path === '') {
+    error.value = 'путь к системному промпту не может быть пустым';
+    return;
+  }
   error.value = null;
   savingPrompt.value = true;
   try {
@@ -151,7 +190,7 @@ watch(
 );
 
 function addFact(): void {
-  factRows.value.push({ key: "", value: "" });
+  factRows.value.push({ key: '', value: '' });
 }
 
 function removeFact(index: number): void {
@@ -164,7 +203,7 @@ async function saveFacts(): Promise<void> {
   const record: Record<string, string> = {};
   for (const row of factRows.value) {
     const key = row.key.trim();
-    if (key === "") continue;
+    if (key === '') continue;
     record[key] = row.value;
   }
   error.value = null;

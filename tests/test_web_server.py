@@ -419,6 +419,94 @@ async def test_rename_session_sets_title() -> None:
         assert sessions[0]["title"] == "Мой заголовок"
 
 
+async def _create_sessions(client: httpx.AsyncClient, n: int) -> list[str]:
+    """Создаёт n сессий (по агенту + сообщению) и возвращает их id."""
+    created = []
+    for i in range(n):
+        body = await create_agent(client)
+        await send_one(client, body["id"], f"вопрос-{i}")
+    sessions = (await client.get("/api/sessions")).json()
+    created = [s["id"] for s in sessions]
+    assert len(created) == n
+    return created
+
+
+async def test_batch_delete_sessions() -> None:
+    world = build_world(
+        [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")], delay=0.05
+    )
+    async with await make_client(world) as client:
+        ids = await _create_sessions(client, 2)
+        resp = await client.post("/api/sessions/batch/delete", json={"ids": ids})
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 2
+        assert (await client.get("/api/sessions")).json() == []
+
+
+async def test_batch_delete_unknown_mixed() -> None:
+    world = build_world(
+        [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")], delay=0.05
+    )
+    async with await make_client(world) as client:
+        ids = await _create_sessions(client, 1)
+        resp = await client.post(
+            "/api/sessions/batch/delete", json={"ids": [ids[0], "nope"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 1
+
+
+async def test_batch_move_sessions() -> None:
+    world = build_world(
+        [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")], delay=0.05
+    )
+    async with await make_client(world) as client:
+        ids = await _create_sessions(client, 2)
+        assert all(s["project_id"] == "default" for s in (await client.get("/api/sessions")).json())
+        proj = (await client.post("/api/projects", json={"name": "Проект 2"})).json()
+        resp = await client.post(
+            "/api/sessions/batch/move", json={"ids": ids, "project_id": proj["id"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["moved"] == 2
+        after = (await client.get("/api/sessions")).json()
+        assert all(s["project_id"] == proj["id"] for s in after)
+
+
+async def test_batch_move_missing_project_404() -> None:
+    world = build_world(
+        [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")], delay=0.05
+    )
+    async with await make_client(world) as client:
+        ids = await _create_sessions(client, 1)
+        resp = await client.post(
+            "/api/sessions/batch/move", json={"ids": ids, "project_id": "nope"}
+        )
+        assert resp.status_code == 404
+
+
+async def test_batch_export_writes_jsonl(tmp_path: Path) -> None:
+    from agent.web_server import app as app_module
+
+    original = app_module.SESSIONS_DIR
+    app_module.SESSIONS_DIR = tmp_path
+    try:
+        world = build_world(
+            [ChatChunk(content="ок"), ChatChunk(finish_reason="stop")], delay=0.05
+        )
+        async with await make_client(world) as client:
+            ids = await _create_sessions(client, 2)
+            resp = await client.post("/api/sessions/batch/export", json={"ids": ids})
+            assert resp.status_code == 200
+            paths = resp.json()["paths"]
+            assert len(paths) == 2
+            for p in paths:
+                assert Path(p).exists()
+                assert Path(p).parent == tmp_path
+    finally:
+        app_module.SESSIONS_DIR = original
+
+
 async def test_sse_streams_reasoning_delta_to_done() -> None:
     world = build_world(
         [

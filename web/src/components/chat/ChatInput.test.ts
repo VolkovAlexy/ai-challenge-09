@@ -1,13 +1,13 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { createPinia, setActivePinia } from "pinia";
-import { mount } from "@vue/test-utils";
-import ChatInput from "./ChatInput.vue";
-import { buildRegistry } from "@/commands/registry";
-import type { CommandDTO } from "@/api/types";
+import { mount } from '@vue/test-utils';
+import { createPinia, setActivePinia } from 'pinia';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { CommandDTO } from '@/api/types';
+import { buildRegistry } from '@/commands/registry';
+import ChatInput from './ChatInput.vue';
 
 const dtos: CommandDTO[] = [
-  { name: "close", description: "закрыть агента", args_spec: "" },
-  { name: "export", description: "экспорт сессии", args_spec: "[file]" },
+  { name: 'close', description: 'закрыть агента', args_spec: '' },
+  { name: 'export', description: 'экспорт сессии', args_spec: '[file]' },
 ];
 
 beforeEach(() => {
@@ -19,67 +19,77 @@ function mountInput(streaming = false) {
     global: {
       stubs: {
         Button: {
-          template: '<button :class="type === \'error\' ? \'btn-stop\' : \'btn-send\'"><slot/></button>',
-          props: ["type", "disabled", "size"],
+          template:
+            "<button :class=\"type === 'error' ? 'btn-stop' : 'btn-send'\"><slot/></button>",
+          props: ['type', 'disabled', 'size'],
         },
         Input: {
-          template: '<div><textarea :value="value" @keydown="$emit(\'keydown\', $event)" @input="$emit(\'update:value\', $event.target.value)"/></div>',
-          props: ["value", "type", "placeholder", "autosize", "disabled"],
-          emits: ["update:value", "keydown"],
+          template:
+            '<div><textarea :value="value" @keydown="$emit(\'keydown\', $event)" @input="$emit(\'update:value\', $event.target.value)"/></div>',
+          props: ['value', 'type', 'placeholder', 'autosize', 'disabled'],
+          emits: ['update:value', 'keydown'],
         },
         Select: {
-          template: '<div class="n-select"><select :value="value"><option v-for="o in options" :value="o.value" :key="o.value">{{ o.label }}</option></select></div>',
-          props: ["value", "options", "size", "placeholder", "style"],
-          emits: ["update:value"],
+          template:
+            '<div class="n-select"><select :value="value"><option v-for="o in options" :value="o.value" :key="o.value">{{ o.label }}</option></select></div>',
+          props: ['value', 'options', 'size', 'placeholder', 'style'],
+          emits: ['update:value'],
         },
       },
     },
-    props: { commands: buildRegistry(dtos), streaming, modelIds: () => ["ollama:llama3.1", "openai:gpt-4"], currentModel: "ollama:llama3.1", profileOptions: [], currentProfile: "" },
+    props: {
+      commands: buildRegistry(dtos),
+      streaming,
+      modelIds: () => ['ollama:llama3.1', 'openai:gpt-4'],
+      currentModel: 'ollama:llama3.1',
+      profileOptions: [],
+      currentProfile: '',
+    },
   });
 }
 
-describe("ChatInput", () => {
-  it("slash-меню открывается по / и фильтруется", async () => {
+describe('ChatInput', () => {
+  it('slash-меню открывается по / и фильтруется', async () => {
     const w = mountInput();
-    await w.find("textarea").setValue("/cl");
-    const items = w.findAll(".slash-item");
+    await w.find('textarea').setValue('/cl');
+    const items = w.findAll('.slash-item');
     expect(items.length).toBe(1);
-    expect(items[0].text()).toContain("/close");
+    expect(items[0].text()).toContain('/close');
   });
 
-  it("навигация ↑↓ / Enter — выбор из меню", async () => {
+  it('навигация ↑↓ / Enter — выбор из меню', async () => {
     const w = mountInput();
-    await w.find("textarea").setValue("/cl");
-    await w.find("textarea").trigger("keydown", { key: "Enter" });
-    expect(w.find("textarea").element.value).toBe("/close ");
+    await w.find('textarea').setValue('/cl');
+    await w.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(w.find('textarea').element.value).toBe('/close ');
   });
 
-  it("Esc закрывает меню (стрим выключен — стоп не эмитится)", async () => {
+  it('Esc закрывает меню (стрим выключен — стоп не эмитится)', async () => {
     const w = mountInput(false);
-    await w.find("textarea").setValue("/cl");
-    expect(w.find(".slash-menu").exists()).toBe(true);
-    await w.find("textarea").trigger("keydown", { key: "Escape" });
+    await w.find('textarea').setValue('/cl');
+    expect(w.find('.slash-menu').exists()).toBe(true);
+    await w.find('textarea').trigger('keydown', { key: 'Escape' });
     // streaming=false -> stop не эмитится
-    expect(w.emitted("stop")).toBeUndefined();
+    expect(w.emitted('stop')).toBeUndefined();
   });
 
-  it("Enter без меню отправляет текст; пустой ввод игнорируется", async () => {
+  it('Enter без меню отправляет текст; пустой ввод игнорируется', async () => {
     const w = mountInput();
-    await w.find("textarea").setValue("");
-    await w.find("textarea").trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")).toBeUndefined();
-    await w.find("textarea").setValue("привет");
-    await w.find("textarea").trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")?.[0]).toEqual(["привет"]);
+    await w.find('textarea').setValue('');
+    await w.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(w.emitted('send')).toBeUndefined();
+    await w.find('textarea').setValue('привет');
+    await w.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(w.emitted('send')?.[0]).toEqual(['привет']);
   });
 
-  it("во время стрима кнопка «Стоп» активна, Enter не отправляет новый запрос", async () => {
+  it('во время стрима кнопка «Стоп» активна, Enter не отправляет новый запрос', async () => {
     const w = mountInput(true);
-    expect(w.find(".btn-stop").exists()).toBe(true);
-    await w.find("textarea").setValue("текст");
-    await w.find("textarea").trigger("keydown", { key: "Enter" });
-    expect(w.emitted("send")).toBeUndefined();
-    await w.find(".btn-stop").trigger("click");
-    expect(w.emitted("stop")).toHaveLength(1);
+    expect(w.find('.btn-stop').exists()).toBe(true);
+    await w.find('textarea').setValue('текст');
+    await w.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(w.emitted('send')).toBeUndefined();
+    await w.find('.btn-stop').trigger('click');
+    expect(w.emitted('stop')).toHaveLength(1);
   });
 });
