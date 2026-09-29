@@ -23,6 +23,7 @@ from agent.core.context import (
     estimate_text,
     fmt_tokens,
 )
+from agent.core.knowledge import KnowledgeBase
 from agent.core.message import (
     ChatChunk,
     ChatRequest,
@@ -134,6 +135,7 @@ class Agent:
         config: Config,
         tools: ToolRegistry | None = None,
         longterm: LongTermSource | None = None,
+        knowledge: KnowledgeBase | None = None,
         project_id: str = "",
         active_profile_id: str = "",
         with_task_tools: bool = True,
@@ -169,6 +171,10 @@ class Agent:
                 self._tools.register(tool)
         # долговременная память: уровень проекта (своя у каждого проекта)
         self._longterm = longterm
+        # RAG-база знаний (общая на процесс): заглушка, если не подключена
+        self._knowledge = knowledge
+        # чанки RAG текущего хода (вычисляются один раз в ask(), читаются _projection())
+        self._rag_chunks: list[str] | None = None
         self._task: asyncio.Task[str] | None = None
         self._stream_text = ""
         self._stream_reasoning = ""  # размышления thinking-моделей (в API-проекцию не попадают)
@@ -317,6 +323,7 @@ class Agent:
                 scratchpad=scratchpad,
                 invariants=invariants,
                 task=task,
+                rag_chunks=self._rag_chunks,
             )
         if strategy == "summary":
             return self.context_builder.build_messages(
@@ -327,6 +334,7 @@ class Agent:
                 scratchpad=scratchpad,
                 invariants=invariants,
                 task=task,
+                rag_chunks=self._rag_chunks,
             )
         # sliding / facts: скользящее окно по полной истории
         return self.context_builder.build_messages(
@@ -337,7 +345,18 @@ class Agent:
             scratchpad=scratchpad,
             invariants=invariants,
             task=task,
+            rag_chunks=self._rag_chunks,
         )
+
+    async def _load_rag_chunks(self, text: str) -> list[str]:
+        """Чанки RAG для текста запроса; деградация к пустому списку при ошибках."""
+        if self._knowledge is None:
+            return []
+        try:
+            chunks = await self._knowledge.search(text)
+        except Exception:
+            return []
+        return [chunk.text for chunk in chunks]
 
     def _projected_tokens(self) -> int:
         """Вес проекции следующего запроса к LLM.
@@ -412,6 +431,7 @@ class Agent:
         self.turn_events = []
         self.subagent_events = []
         self.memory.add(Message(role=Role.USER, content=text))
+        self._rag_chunks = await self._load_rag_chunks(text)
         self._stream_text = ""
         self._stream_reasoning = ""
         self._stream_tcs = {}
@@ -539,6 +559,7 @@ class Agent:
             self._stream_tcs = {}
             self._finish_reason = None
             self._round_usages = []
+            self._rag_chunks = None
 
     def _extract_memory_suggestion(self, text: str) -> str:
         """Вырезает [MEMORY_SUGGESTION]-блок из ответа; текст ждёт решения UI.
@@ -903,6 +924,7 @@ class Agent:
         self.facts_note = None
         self._pending_memory_suggestion = None
         self.subagent_events = []
+        self._rag_chunks = None
 
     def request_compaction(self) -> None:
         """Форсирует сжатие префикса истории при следующем ходе (команда /compact)."""

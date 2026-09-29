@@ -7,6 +7,8 @@ import type {
   CommandDTO,
   ConfigDTO,
   ForkResponseDTO,
+  KnowledgeDTO,
+  KnowledgePatchRequest,
   LongTermDTO,
   McpDTO,
   McpPatchRequest,
@@ -136,6 +138,13 @@ export const api = {
 
   listMcp: () => request<McpDTO[]>('GET', '/mcp'),
   setMcp: (name: string, body: McpPatchRequest) => request<McpDTO[]>('PATCH', `/mcp/${name}`, body),
+
+  // --- знания (RAG) ---
+
+  /** Состояние RAG-знаний для панели «Знания». */
+  getKnowledge: () => request<KnowledgeDTO>('GET', '/knowledge'),
+  /** Эфемерные настройки RAG (не персистятся в config.json). */
+  patchKnowledge: (body: KnowledgePatchRequest) => request<KnowledgeDTO>('POST', '/knowledge', body),
 
   // --- память ---
 

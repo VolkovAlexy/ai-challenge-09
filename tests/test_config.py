@@ -155,3 +155,69 @@ def test_default_config_is_valid() -> None:
     cfg = default_config()
     assert isinstance(cfg, Config)
     assert cfg.default_model in cfg.all_model_ids()
+
+
+def embedding_dict() -> dict:
+    data = valid_dict()
+    data["embedding_model"] = "ollama:nomic-embed-text-v2-moe:latest"
+    data["knowledge_dir"] = "knowledge"
+    data["rag_top_k"] = 6
+    data["chunk_strategy"] = "fixed"
+    data["chunk_size"] = 300
+    data["chunk_overlap"] = 40
+    return data
+
+
+def test_embedding_model_resolves_without_chat_registration() -> None:
+    """Эмбединг-модель не обязана быть в чат-списке провайдера."""
+    cfg = validate_config(embedding_dict())
+    provider, model = cfg.resolve_embedding()
+    assert model == "nomic-embed-text-v2-moe:latest"
+    assert provider.api_base == "http://localhost:11434/v1"
+    assert "nomic-embed-text-v2-moe:latest" not in cfg.providers["ollama"].models
+
+
+def test_embedding_model_absent_raises() -> None:
+    cfg = validate_config(valid_dict())
+    with pytest.raises(ValueError, match="embedding_model"):
+        cfg.resolve_embedding()
+
+
+def test_embedding_model_bad_format() -> None:
+    data = valid_dict()
+    data["embedding_model"] = "gpt-4o-mini"
+    with pytest.raises(ValueError, match="provider:model"):
+        validate_config(data)
+
+
+def test_embedding_model_unknown_provider() -> None:
+    data = embedding_dict()
+    data["embedding_model"] = "mistral:m1"
+    with pytest.raises(ValueError, match="провайдер 'mistral' не найден"):
+        validate_config(data)
+
+
+def test_embedding_defaults() -> None:
+    cfg = validate_config(valid_dict())
+    assert cfg.embedding_model is None
+    assert cfg.knowledge_dir == "knowledge"
+    assert cfg.rag_top_k == 4
+    assert cfg.chunk_strategy == "paragraph"
+    assert cfg.chunk_size == 512
+    assert cfg.chunk_overlap == 64
+    assert cfg.embed_batch_size == 128
+
+
+def test_embed_batch_size_validation() -> None:
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "embed_batch_size": 0})
+    assert validate_config({**valid_dict(), "embed_batch_size": 16}).embed_batch_size == 16
+
+
+def test_chunk_strategy_validation() -> None:
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "chunk_strategy": "magic"})
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "rag_top_k": 0})
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "chunk_size": 0})

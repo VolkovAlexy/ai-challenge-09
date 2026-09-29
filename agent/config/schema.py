@@ -16,6 +16,13 @@ ContextStrategy = Literal["none", "summary", "sliding", "facts"]
 - facts — facts-блок (ключ-значение) + последние N сообщений.
 """
 
+EmbeddingStrategy = Literal["paragraph", "fixed"]
+"""Стратегия нарезки файлов знаний на чанки.
+
+- paragraph — по абзацам (разделитель — пустая строка), короткие склеиваются;
+- fixed — непрерывные куски фиксированного размера с перекрытием.
+"""
+
 
 class Provider(BaseModel):
     """Один именованный провайдер (любой OpenAI-compatible эндпоинт)."""
@@ -108,6 +115,39 @@ class Config(BaseModel):
     scheduler: SchedulerConfig | None = Field(
         default=None, description="Планировщик: адрес доставки результатов (None — выключен)"
     )
+    embedding_model: str | None = Field(
+        default=None,
+        description="Модель эмбедингов в формате provider:model (None — RAG выключен)",
+    )
+    knowledge_dir: str = Field(
+        default="knowledge",
+        description="Папка с файлами знаний для RAG-индекса (относительно CWD)",
+    )
+    rag_top_k: int = Field(
+        default=4,
+        ge=1,
+        le=20,
+        description="Сколько релевантных чанков инжектить в контекст при каждом ходе",
+    )
+    chunk_strategy: EmbeddingStrategy = Field(
+        default="paragraph",
+        description="Стратегия нарезки файлов знаний на чанки (paragraph/fixed)",
+    )
+    chunk_size: int = Field(
+        default=512,
+        gt=0,
+        description="Размер чанка в символах (стратегия fixed)",
+    )
+    chunk_overlap: int = Field(
+        default=64,
+        ge=0,
+        description="Перекрытие соседних чанков в символах (стратегия fixed)",
+    )
+    embed_batch_size: int = Field(
+        default=128,
+        gt=0,
+        description="Сколько чанков отправлять в одном эмбединг-запросе при индексации",
+    )
 
     @model_validator(mode="after")
     def _default_model_exists(self) -> Config:
@@ -126,6 +166,22 @@ class Config(BaseModel):
             raise ValueError(
                 f"default_model '{self.default_model}': модель '{model}' не найдена "
                 f"у провайдера '{provider}' (доступны: {', '.join(known.models)})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _embedding_model_exists(self) -> Config:
+        if not self.embedding_model:
+            return self
+        provider, sep, model = self.embedding_model.partition(":")
+        if not sep or not provider or not model:
+            raise ValueError(
+                f"embedding_model '{self.embedding_model}' должен быть в формате 'provider:model'"
+            )
+        if provider not in self.providers:
+            raise ValueError(
+                f"embedding_model '{self.embedding_model}': провайдер '{provider}' не найден "
+                f"(доступны: {', '.join(self.providers)})"
             )
         return self
 
@@ -151,6 +207,28 @@ class Config(BaseModel):
             raise ValueError(
                 f"модель '{model}' не найдена у провайдера '{provider}' "
                 f"(доступны: {', '.join(known.models)})"
+            )
+        return known, model
+
+    def resolve_embedding(self) -> tuple[Provider, str]:
+        """Резолвит embedding_model 'provider:model' → (Provider, название модели).
+
+        В отличие от `resolve_model`, модель эмбедингов НЕ обязана быть в
+        чат-списке провайдера (она не craft-compatible и не показывается в
+        палитре моделей); нужен только сам провайдер ради api_base/api_key.
+        """
+        if not self.embedding_model:
+            raise ValueError("embedding_model не задан (RAG выключен)")
+        provider, sep, model = self.embedding_model.partition(":")
+        if not sep or not provider or not model:
+            raise ValueError(
+                f"embedding_model '{self.embedding_model}' должен быть в формате 'provider:model'"
+            )
+        known = self.providers.get(provider)
+        if known is None:
+            raise ValueError(
+                f"embedding_model '{self.embedding_model}': провайдер '{provider}' не найден "
+                f"(доступны: {', '.join(self.providers)})"
             )
         return known, model
 

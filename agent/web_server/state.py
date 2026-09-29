@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 from dataclasses import dataclass, field
 
 from agent.commands.registry import CommandRegistry
 from agent.config.schema import AgentSettings, Config
 from agent.core.agent import Agent, AgentBusyError, TokenUsage
+from agent.core.knowledge import KnowledgeBase
 from agent.core.message import Message, Role
 from agent.core.task import TaskPhase, TaskState
 from agent.llm.client import LLMClient
@@ -26,6 +29,8 @@ from agent.web_server.dto import (
     AgentSettingsDTO,
     CommandDTO,
     ConfigDTO,
+    KnowledgeDTO,
+    KnowledgePatchRequest,
     LongTermDTO,
     McpDTO,
     MessageDTO,
@@ -71,12 +76,15 @@ class WebState:
         default_system_prompt: str,
         default_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
         mcp: McpManager | None = None,
+        knowledge: KnowledgeBase | None = None,
     ) -> None:
         self.config = config
         self.llm = llm
         self.tools = tools
         self.store = store
         self.mcp = mcp
+        self.knowledge = knowledge
+        self._knowledge_rebuild_task: asyncio.Task[None] | None = None
         self.default_project_id = DEFAULT_PROJECT_ID
         self._default_system_prompt = default_system_prompt
         self._default_prompt_path = default_prompt_path
@@ -125,6 +133,7 @@ class WebState:
             config=self.config,
             tools=self.tools,
             longterm=ProjectLongTermMemory(self.store, project_id),
+            knowledge=self.knowledge,
             project_id=project_id,
             agent_id=agent_id,
             session_id=session_id,
@@ -207,6 +216,7 @@ class WebState:
             config=self.config,
             tools=self.tools,
             longterm=ProjectLongTermMemory(self.store, project_id),
+            knowledge=self.knowledge,
             project_id=project_id,
             agent_id=agent_id,
             session_id=branch_session_id,
@@ -302,6 +312,87 @@ class WebState:
     def list_mcp(self) -> list[McpDTO]:
         """Состояние всех MCP-серверов для панели."""
         return self.mcp.dto_list() if self.mcp is not None else []
+
+    # --- знания (RAG): статус + эфемерные настройки ---
+
+    def knowledge_dto(self) -> KnowledgeDTO:
+        """Состояние RAG-знаний для панели; деградированный, если RAG не сконфигурирован."""
+        config = self.config
+        if self.knowledge is None:
+            return KnowledgeDTO(
+                enabled=False,
+                embedding_model=config.embedding_model,
+                chunk_strategy=config.chunk_strategy,
+                chunk_size=config.chunk_size,
+                chunk_overlap=config.chunk_overlap,
+                top_k=config.rag_top_k,
+            )
+        kb = self.knowledge
+        return KnowledgeDTO(
+            enabled=kb.enabled,
+            ready=kb.ready,
+            indexing=kb.indexing,
+            indexed=kb.indexed,
+            total=kb.total,
+            size=kb.size,
+            chunk_strategy=kb.chunk_strategy,
+            chunk_size=kb.chunk_size,
+            chunk_overlap=kb.chunk_overlap,
+            top_k=kb.top_k,
+            embedding_model=config.embedding_model,
+            error=kb.error,
+        )
+
+    async def update_knowledge(self, body: KnowledgePatchRequest) -> KnowledgeDTO:
+        """Применяет эфемерные настройки RAG (без записи в config.json).
+
+        Изменение нарезки (strategy/size/overlap) или принудительный `rebuild`
+        запускает фоновую переиндексацию. Ответ возвращается сразу со старым
+        состоянием; прогресс читается поллингом `GET /api/knowledge`.
+        """
+        if self.knowledge is None:
+            return self.knowledge_dto()
+        kb = self.knowledge
+        kb.set_config(
+            enabled=body.enabled,
+            chunk_strategy=body.chunk_strategy,
+            chunk_size=body.chunk_size,
+            chunk_overlap=body.chunk_overlap,
+        )
+        need_rebuild = (
+            body.rebuild
+            or body.chunk_strategy is not None
+            or body.chunk_size is not None
+            or body.chunk_overlap is not None
+        )
+        if need_rebuild:
+            self.start_knowledge_rebuild()
+        return self.knowledge_dto()
+
+    def start_knowledge_rebuild(self) -> None:
+        """Запускает фоновую переиндексацию знаний (no-op, если уже идёт/нет RAG)."""
+        if self.knowledge is None:
+            return
+        task = self._knowledge_rebuild_task
+        if task is not None and not task.done():
+            return
+        self._knowledge_rebuild_task = asyncio.create_task(
+            self._run_knowledge_rebuild(), name="knowledge-rebuild"
+        )
+
+    async def _run_knowledge_rebuild(self) -> None:
+        if self.knowledge is not None:
+            await self.knowledge.rebuild()
+
+    async def stop_knowledge_rebuild(self) -> None:
+        """Отменяет и дожидается фоновую переиндексацию (shutdown)."""
+        task = self._knowledge_rebuild_task
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        self._knowledge_rebuild_task = None
 
     # --- персист (аналог TUI _persist_tab/_tick) ---
 

@@ -24,6 +24,13 @@ _DEFAULT_CONFIG: dict[str, object] = {
     "stop": [],
     "context_window_default": 32768,
     "compaction_threshold": 0.6,
+    "embedding_model": None,
+    "knowledge_dir": "knowledge",
+    "rag_top_k": 4,
+    "chunk_strategy": "paragraph",
+    "chunk_size": 512,
+    "chunk_overlap": 64,
+    "embed_batch_size": 128,
 }
 
 

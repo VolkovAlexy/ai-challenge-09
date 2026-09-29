@@ -20,10 +20,13 @@ from fastapi import FastAPI, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from agent.commands.registry import default_registry
+from agent.config.schema import Config
 from agent.config.store import DEFAULT_CONFIG_PATH, load_config
 from agent.core.agent import AgentBusyError
+from agent.core.knowledge import KnowledgeBase
 from agent.core.task import InvalidTaskTransition
 from agent.llm.client import LLMClient
+from agent.llm.embedding import Embedder
 from agent.memory.persistence import SessionStore
 from agent.tools.mcp_manager import McpManager
 from agent.tools.registry import ToolRegistry
@@ -44,6 +47,23 @@ def _sessions_db() -> Path:
     return SESSIONS_DIR / "sessions.db"
 
 
+def _build_knowledge(config: Config) -> KnowledgeBase | None:
+    """Собирает KnowledgeBase из конфига; None — RAG выключен (embedding_model не задан)."""
+    if not config.embedding_model:
+        return None
+    provider, model = config.resolve_embedding()
+    embedder = Embedder(api_base=provider.api_base, api_key=provider.api_key, model=model)
+    return KnowledgeBase(
+        embedder=embedder,
+        knowledge_dir=Path(config.knowledge_dir),
+        top_k=config.rag_top_k,
+        chunk_strategy=config.chunk_strategy,
+        chunk_size=config.chunk_size,
+        chunk_overlap=config.chunk_overlap,
+        embed_batch_size=config.embed_batch_size,
+    )
+
+
 async def _autosave_loop(state: WebState, interval: float) -> None:
     """Период-тик автосохранения: снапшот только «грязных» агентов."""
     while True:
@@ -58,6 +78,7 @@ def create_app(state: WebState) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tick = asyncio.create_task(_autosave_loop(state, AUTOSAVE_INTERVAL))
         probe = asyncio.create_task(state.start_mcp())
+        state.start_knowledge_rebuild()
         watchdog: asyncio.Task[None] | None = None
         if state.config.watchdog is not None and state.config.watchdog.enabled:
             watchdog = asyncio.create_task(
@@ -73,6 +94,7 @@ def create_app(state: WebState) -> FastAPI:
             probe.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await probe
+            await state.stop_knowledge_rebuild()
             if watchdog is not None:
                 watchdog.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -80,6 +102,8 @@ def create_app(state: WebState) -> FastAPI:
             if state.mcp is not None:
                 await state.mcp.stop()
             await state.llm.close()
+            if state.knowledge is not None:
+                await state.knowledge.close()
             state.store.close()
 
     app = FastAPI(title="my-agent web backend", lifespan=lifespan)
@@ -118,6 +142,16 @@ def create_app(state: WebState) -> FastAPI:
             return await state.set_mcp_enabled(name, body.enabled)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # --- знания (RAG) ---
+
+    @app.get("/api/knowledge")
+    def get_knowledge() -> dto.KnowledgeDTO:
+        return state.knowledge_dto()
+
+    @app.post("/api/knowledge")
+    async def post_knowledge(body: dto.KnowledgePatchRequest) -> dto.KnowledgeDTO:
+        return await state.update_knowledge(body)
 
     # --- системный промпт (активный агент) ---
 
@@ -550,6 +584,7 @@ def main() -> None:
     llm = LLMClient()
     tools = ToolRegistry()
     mcp = McpManager(config.mcp_servers)
+    knowledge = _build_knowledge(config)
     store = SessionStore(args.sessions or _sessions_db())
     prompt_path = Path(DEFAULT_SYSTEM_PROMPT_PATH)
     prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
@@ -561,6 +596,7 @@ def main() -> None:
         default_system_prompt=prompt,
         default_prompt_path=DEFAULT_SYSTEM_PROMPT_PATH,
         mcp=mcp,
+        knowledge=knowledge,
     )
     app = create_app(state)
     uvicorn.run(app, host=args.host, port=args.port, reload=args.reload)

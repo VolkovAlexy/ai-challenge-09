@@ -230,3 +230,32 @@ export interface ForkResponseDTO {
   agent: AgentDTO;
   messages: MessageDTO[];
 }
+
+export type EmbeddingStrategy = 'paragraph' | 'fixed';
+
+/** Состояние RAG-знаний для панели «Знания» (без текстов файлов и ключей). */
+export interface KnowledgeDTO {
+  enabled: boolean;
+  ready: boolean;
+  indexing: boolean;
+  indexed: number;
+  total: number;
+  size: number;
+  chunk_strategy: EmbeddingStrategy;
+  chunk_size: number;
+  chunk_overlap: number;
+  top_k: number;
+  /** provider:model, если RAG сконфигурирован; null — RAG не настроен */
+  embedding_model: string | null;
+  /** последняя индексация завершилась ошибкой */
+  error: boolean;
+}
+
+/** Эфемерные настройки RAG (не пишутся в config.json; сброс при рестарте). */
+export interface KnowledgePatchRequest {
+  enabled?: boolean;
+  chunk_strategy?: EmbeddingStrategy;
+  chunk_size?: number;
+  chunk_overlap?: number;
+  rebuild?: boolean;
+}

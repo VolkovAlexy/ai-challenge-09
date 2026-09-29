@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field
 ContextStrategyValue = Literal["none", "summary", "sliding", "facts"]
 """Допустимые стратегии контекста агента (зеркало config.schema.ContextStrategy)."""
 
+EmbeddingStrategyValue = Literal["paragraph", "fixed"]
+"""Стратегия нарезки файлов знаний (зеркало config.schema.EmbeddingStrategy)."""
+
 
 class UsageDTO(BaseModel):
     """Потребление токенов одного хода."""
@@ -321,3 +324,30 @@ class SchedulerEventRequest(BaseModel):
     event: str
     job: dict[str, object] = {}
     summary: dict[str, object] | None = None
+
+
+class KnowledgeDTO(BaseModel):
+    """Состояние RAG-знаний для панели «Знания» (без текстов файлов и ключей)."""
+
+    enabled: bool = False  # RAG включён (поиск по знаниям при каждом ходе)
+    ready: bool = False  # индекс собран и обслуживает поиск
+    indexing: bool = False  # идёт перестройка индекса
+    indexed: int = 0  # сколько чанков уже проиндексировано в текущем прогоне
+    total: int = 0  # всего чанков в текущем прогоне
+    size: int = 0  # чанков в готовом индексе
+    chunk_strategy: EmbeddingStrategyValue = "paragraph"
+    chunk_size: int = 512
+    chunk_overlap: int = 64
+    top_k: int = 4
+    embedding_model: str | None = None  # provider:model, если RAG сконфигурирован
+    error: bool = False  # последняя индексация завершилась ошибкой
+
+
+class KnowledgePatchRequest(BaseModel):
+    """Эфемерные настройки RAG (не пишутся в config.json; сброс при рестарте)."""
+
+    enabled: bool | None = None
+    chunk_strategy: EmbeddingStrategyValue | None = None
+    chunk_size: int | None = Field(default=None, gt=0)
+    chunk_overlap: int | None = Field(default=None, ge=0)
+    rebuild: bool = False  # принудительная переиндексация

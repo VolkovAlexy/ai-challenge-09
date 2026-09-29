@@ -128,6 +128,33 @@ async def test_config_no_api_key() -> None:
         assert body["default_model"] == "p1:m1"
 
 
+async def test_knowledge_disabled_default() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        resp = await client.get("/api/knowledge")
+        assert resp.status_code == 200
+        assert "api_key" not in resp.text
+        body = resp.json()
+        assert body["enabled"] is False
+        assert body["embedding_model"] is None
+        assert body["chunk_strategy"] == "paragraph"
+        assert body["chunk_size"] == 512
+        assert body["chunk_overlap"] == 64
+        assert body["top_k"] == 4
+        assert body["indexing"] is False
+        assert body["size"] == 0
+
+
+async def test_knowledge_patch_without_knowledge_returns_disabled() -> None:
+    world = build_world()
+    async with await make_client(world) as client:
+        resp = await client.post("/api/knowledge", json={"enabled": True})
+        assert resp.status_code == 200
+        assert "api_key" not in resp.text
+        assert resp.json()["enabled"] is False
+        assert resp.json()["embedding_model"] is None
+
+
 async def test_commands_contains() -> None:
     world = build_world()
     async with await make_client(world) as client:

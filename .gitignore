@@ -226,6 +226,7 @@ __marimo__/
 config.json
 sessions/
 project_log/
+knowledge/
 
 # node (web)
 node_modules/
