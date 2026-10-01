@@ -202,10 +202,29 @@ def test_embedding_defaults() -> None:
     assert cfg.embedding_model is None
     assert cfg.knowledge_dir == "knowledge"
     assert cfg.rag_top_k == 4
+    assert cfg.rag_retrieve_top_k == 20
+    assert cfg.rag_relevance_enabled is False
+    assert cfg.rag_relevance_threshold == 0.6
     assert cfg.chunk_strategy == "paragraph"
     assert cfg.chunk_size == 512
     assert cfg.chunk_overlap == 64
     assert cfg.embed_batch_size == 128
+
+
+def test_rag_top_k_ordering_validation() -> None:
+    with pytest.raises(ValueError, match="rag_retrieve_top_k"):
+        validate_config({**valid_dict(), "rag_top_k": 10, "rag_retrieve_top_k": 5})
+    cfg = validate_config({**valid_dict(), "rag_top_k": 10, "rag_retrieve_top_k": 10})
+    assert cfg.rag_retrieve_top_k == cfg.rag_top_k
+
+
+def test_rag_relevance_threshold_validation() -> None:
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "rag_relevance_threshold": 1.5})
+    with pytest.raises(ValueError):
+        validate_config({**valid_dict(), "rag_relevance_threshold": -0.1})
+    cfg = validate_config({**valid_dict(), "rag_relevance_threshold": 0.5})
+    assert cfg.rag_relevance_threshold == 0.5
 
 
 def test_embed_batch_size_validation() -> None:

@@ -245,6 +245,11 @@ export interface KnowledgeDTO {
   chunk_size: number;
   chunk_overlap: number;
   top_k: number;
+  retrieve_top_k: number;
+  /** включён ли фильтр релевантности */
+  relevance_enabled: boolean;
+  /** порог отсечения по косинусной мере */
+  relevance_threshold: number;
   /** provider:model, если RAG сконфигурирован; null — RAG не настроен */
   embedding_model: string | null;
   /** последняя индексация завершилась ошибкой */
@@ -254,6 +259,10 @@ export interface KnowledgeDTO {
 /** Эфемерные настройки RAG (не пишутся в config.json; сброс при рестарте). */
 export interface KnowledgePatchRequest {
   enabled?: boolean;
+  top_k?: number;
+  retrieve_top_k?: number;
+  relevance_enabled?: boolean;
+  relevance_threshold?: number;
   chunk_strategy?: EmbeddingStrategy;
   chunk_size?: number;
   chunk_overlap?: number;

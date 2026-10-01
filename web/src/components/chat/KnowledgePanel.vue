@@ -15,20 +15,53 @@ const knowledge = computed(() => store.knowledge);
 const error = computed(() => store.loadError);
 
 let timer: ReturnType<typeof setInterval> | null = null;
+let mounted = false;
+
+function stopPolling(): void {
+  if (timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+async function poll(): Promise<void> {
+  await store.load();
+  if (!mounted) return;
+  if (!store.knowledge?.indexing) stopPolling();
+}
+
+function startPolling(): void {
+  if (timer !== null) return;
+  timer = setInterval(() => void poll(), 2000);
+  void poll();
+}
 
 onMounted(() => {
+  mounted = true;
   void store.load();
-  timer = setInterval(() => void store.load(), 2000);
 });
 
 onUnmounted(() => {
-  if (timer !== null) clearInterval(timer);
+  mounted = false;
+  stopPolling();
 });
+
+watch(
+  () => knowledge.value?.indexing,
+  (indexing) => {
+    if (indexing) startPolling();
+    else stopPolling();
+  },
+);
 
 const enabled = ref(true);
 const strategy = ref<'paragraph' | 'fixed'>('paragraph');
 const chunkSize = ref(512);
 const chunkOverlap = ref(64);
+const topK = ref(4);
+const retrieveTopK = ref(20);
+const relevanceEnabled = ref(false);
+const relevanceThreshold = ref(0.6);
 
 watch(
   knowledge,
@@ -38,6 +71,10 @@ watch(
     strategy.value = k.chunk_strategy;
     chunkSize.value = k.chunk_size;
     chunkOverlap.value = k.chunk_overlap;
+    topK.value = k.top_k;
+    retrieveTopK.value = k.retrieve_top_k;
+    relevanceEnabled.value = k.relevance_enabled;
+    relevanceThreshold.value = k.relevance_threshold;
   },
   { immediate: true },
 );
@@ -46,22 +83,45 @@ function toggleEnabled(v: boolean): void {
   void store.update({ enabled: v });
 }
 
-function onStrategy(v: string): void {
-  void store.update({ chunk_strategy: v as 'paragraph' | 'fixed' });
+async function onStrategy(v: string): Promise<void> {
+  await store.update({ chunk_strategy: v as 'paragraph' | 'fixed' });
+  startPolling();
 }
 
-function onChunkSize(v: number | null): void {
+async function onChunkSize(v: number | null): Promise<void> {
   if (v === null) return;
-  void store.update({ chunk_size: v });
+  await store.update({ chunk_size: v });
+  startPolling();
 }
 
-function onChunkOverlap(v: number | null): void {
+async function onChunkOverlap(v: number | null): Promise<void> {
   if (v === null) return;
-  void store.update({ chunk_overlap: v });
+  await store.update({ chunk_overlap: v });
+  startPolling();
 }
 
-function rebuild(): void {
-  void store.update({ rebuild: true });
+async function onTopK(v: number | null): Promise<void> {
+  if (v === null) return;
+  await store.update({ top_k: v });
+}
+
+async function onRetrieveTopK(v: number | null): Promise<void> {
+  if (v === null) return;
+  await store.update({ retrieve_top_k: v });
+}
+
+function onRelevanceEnabled(v: boolean): void {
+  void store.update({ relevance_enabled: v });
+}
+
+async function onRelevanceThreshold(v: number | null): Promise<void> {
+  if (v === null) return;
+  await store.update({ relevance_threshold: v });
+}
+
+async function rebuild(): Promise<void> {
+  await store.update({ rebuild: true });
+  startPolling();
 }
 
 const STRATEGY_OPTIONS = [
@@ -109,7 +169,7 @@ const status = computed(() => {
         />
       </div>
 
-      <div class="row">
+      <div v-if="strategy === 'fixed'" class="row">
         <span class="label">Размер куска</span>
         <n-input-number
           :value="chunkSize"
@@ -121,7 +181,7 @@ const status = computed(() => {
         />
       </div>
 
-      <div class="row">
+      <div v-if="strategy === 'fixed'" class="row">
         <span class="label">Перекрытие</span>
         <n-input-number
           :value="chunkOverlap"
@@ -130,6 +190,50 @@ const status = computed(() => {
           size="small"
           class="ctrl"
           @update:value="onChunkOverlap"
+        />
+      </div>
+
+      <div class="row">
+        <span class="label">RAG top-k</span>
+        <n-input-number
+          :value="topK"
+          :min="1"
+          :max="20"
+          size="small"
+          class="ctrl"
+          @update:value="onTopK"
+        />
+      </div>
+
+      <div class="row">
+        <span class="label">Фильтр релевантности</span>
+        <n-switch size="small" :value="relevanceEnabled" @update:value="onRelevanceEnabled" />
+      </div>
+
+      <div class="row">
+        <span class="label">Кандидатов (до фильтра)</span>
+        <n-input-number
+          :value="retrieveTopK"
+          :min="1"
+          :max="50"
+          size="small"
+          class="ctrl"
+          :disabled="!relevanceEnabled"
+          @update:value="onRetrieveTopK"
+        />
+      </div>
+
+      <div class="row">
+        <span class="label">Порог отсечения</span>
+        <n-input-number
+          :value="relevanceThreshold"
+          :min="0.0"
+          :max="1.0"
+          :step="0.05"
+          size="small"
+          class="ctrl"
+          :disabled="!relevanceEnabled"
+          @update:value="onRelevanceThreshold"
         />
       </div>
 

@@ -326,6 +326,9 @@ class WebState:
                 chunk_size=config.chunk_size,
                 chunk_overlap=config.chunk_overlap,
                 top_k=config.rag_top_k,
+                retrieve_top_k=config.rag_retrieve_top_k,
+                relevance_enabled=config.rag_relevance_enabled,
+                relevance_threshold=config.rag_relevance_threshold,
             )
         kb = self.knowledge
         return KnowledgeDTO(
@@ -339,6 +342,9 @@ class WebState:
             chunk_size=kb.chunk_size,
             chunk_overlap=kb.chunk_overlap,
             top_k=kb.top_k,
+            retrieve_top_k=kb.retrieve_top_k,
+            relevance_enabled=kb.relevance_enabled,
+            relevance_threshold=kb.relevance_threshold,
             embedding_model=config.embedding_model,
             error=kb.error,
         )
@@ -355,6 +361,10 @@ class WebState:
         kb = self.knowledge
         kb.set_config(
             enabled=body.enabled,
+            top_k=body.top_k,
+            retrieve_top_k=body.retrieve_top_k,
+            relevance_enabled=body.relevance_enabled,
+            relevance_threshold=body.relevance_threshold,
             chunk_strategy=body.chunk_strategy,
             chunk_size=body.chunk_size,
             chunk_overlap=body.chunk_overlap,

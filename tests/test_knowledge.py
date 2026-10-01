@@ -71,6 +71,54 @@ async def test_search_top_k_limit(tmp_path) -> None:
     assert len(results) <= 3
 
 
+async def test_search_relevance_threshold_filters(tmp_path) -> None:
+    (tmp_path / "apple.md").write_text("apple apple apple", encoding="utf-8")
+    (tmp_path / "banana.md").write_text("banana banana banana", encoding="utf-8")
+    kb = KnowledgeBase(
+        embedder=FakeEmbedder(),  # type: ignore[arg-type]
+        knowledge_dir=tmp_path,
+        top_k=4,
+        retrieve_top_k=10,
+        relevance_enabled=True,
+        relevance_threshold=0.5,
+    )
+    assert await kb.rebuild() is True
+    results = await kb.search("apple")
+    assert len(results) == 1
+    assert all("apple.md" in (c.metadata.get("source") or "") for c in results)
+
+
+async def test_search_disabled_ignores_threshold(tmp_path) -> None:
+    (tmp_path / "apple.md").write_text("apple apple apple", encoding="utf-8")
+    (tmp_path / "banana.md").write_text("banana banana banana", encoding="utf-8")
+    kb = KnowledgeBase(
+        embedder=FakeEmbedder(),  # type: ignore[arg-type]
+        knowledge_dir=tmp_path,
+        top_k=4,
+        retrieve_top_k=10,
+        relevance_enabled=False,
+        relevance_threshold=0.5,
+    )
+    assert await kb.rebuild() is True
+    results = await kb.search("apple")
+    assert len(results) == 2
+
+
+async def test_search_retrieve_pool_limit(tmp_path) -> None:
+    for i in range(3):
+        (tmp_path / f"f{i}.md").write_text(f"apple chunk {i}", encoding="utf-8")
+    kb = KnowledgeBase(
+        embedder=FakeEmbedder(),  # type: ignore[arg-type]
+        knowledge_dir=tmp_path,
+        top_k=4,
+        retrieve_top_k=2,
+        relevance_enabled=True,
+    )
+    assert await kb.rebuild() is True
+    results = await kb.search("apple")
+    assert len(results) == 2
+
+
 async def test_search_returns_empty_in_degrades(tmp_path) -> None:
     embedder = FakeEmbedder(fail=True)
     (tmp_path / "a.md").write_text("apple", encoding="utf-8")

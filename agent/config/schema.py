@@ -127,7 +127,23 @@ class Config(BaseModel):
         default=4,
         ge=1,
         le=20,
-        description="Сколько релевантных чанков инжектить в контекст при каждом ходе",
+        description="Сколько релевантных чанков инжектить в контекст (после фильтра)",
+    )
+    rag_retrieve_top_k: int = Field(
+        default=20,
+        ge=1,
+        le=50,
+        description="Сколько кандидатов отбирать из индекса перед фильтрацией релевантности",
+    )
+    rag_relevance_enabled: bool = Field(
+        default=False,
+        description="Включён ли фильтр релевантности (порог отсечения по косинусной мере)",
+    )
+    rag_relevance_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Порог отсечения по косинусной мере (применяется при включённом фильтре)",
     )
     chunk_strategy: EmbeddingStrategy = Field(
         default="paragraph",
@@ -182,6 +198,15 @@ class Config(BaseModel):
             raise ValueError(
                 f"embedding_model '{self.embedding_model}': провайдер '{provider}' не найден "
                 f"(доступны: {', '.join(self.providers)})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _rag_top_k_ordering(self) -> Config:
+        if self.rag_retrieve_top_k < self.rag_top_k:
+            raise ValueError(
+                "rag_retrieve_top_k должен быть не меньше rag_top_k "
+                f"(получено {self.rag_retrieve_top_k} < {self.rag_top_k})"
             )
         return self
 

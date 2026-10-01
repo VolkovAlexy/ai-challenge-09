@@ -141,6 +141,9 @@ async def test_knowledge_disabled_default() -> None:
         assert body["chunk_size"] == 512
         assert body["chunk_overlap"] == 64
         assert body["top_k"] == 4
+        assert body["retrieve_top_k"] == 20
+        assert body["relevance_enabled"] is False
+        assert body["relevance_threshold"] == 0.6
         assert body["indexing"] is False
         assert body["size"] == 0
 

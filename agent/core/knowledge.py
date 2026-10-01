@@ -77,6 +77,9 @@ class KnowledgeBase:
         embedder: Embedder,
         knowledge_dir: Path,
         top_k: int = 4,
+        retrieve_top_k: int = 10,
+        relevance_enabled: bool = False,
+        relevance_threshold: float = 0.6,
         chunk_strategy: EmbeddingStrategy = "paragraph",
         chunk_size: int = 512,
         chunk_overlap: int = 64,
@@ -85,6 +88,9 @@ class KnowledgeBase:
         self._embedder = embedder
         self._dir = knowledge_dir
         self._top_k = max(1, top_k)
+        self._retrieve_top_k = max(1, retrieve_top_k)
+        self._relevance_enabled = relevance_enabled
+        self._relevance_threshold = max(0.0, relevance_threshold)
         self._chunk_strategy = chunk_strategy
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
@@ -121,6 +127,18 @@ class KnowledgeBase:
         return self._top_k
 
     @property
+    def retrieve_top_k(self) -> int:
+        return self._retrieve_top_k
+
+    @property
+    def relevance_enabled(self) -> bool:
+        return self._relevance_enabled
+
+    @property
+    def relevance_threshold(self) -> float:
+        return self._relevance_threshold
+
+    @property
     def error(self) -> bool:
         """Последняя индексация завершилась ошибкой (сбор падает → RAG выключен)."""
         return self._error
@@ -129,6 +147,10 @@ class KnowledgeBase:
         self,
         *,
         enabled: bool | None = None,
+        top_k: int | None = None,
+        retrieve_top_k: int | None = None,
+        relevance_enabled: bool | None = None,
+        relevance_threshold: float | None = None,
         chunk_strategy: EmbeddingStrategy | None = None,
         chunk_size: int | None = None,
         chunk_overlap: int | None = None,
@@ -140,6 +162,14 @@ class KnowledgeBase:
         """
         if enabled is not None:
             self.enabled = enabled
+        if top_k is not None:
+            self._top_k = max(1, top_k)
+        if retrieve_top_k is not None:
+            self._retrieve_top_k = max(1, retrieve_top_k)
+        if relevance_enabled is not None:
+            self._relevance_enabled = relevance_enabled
+        if relevance_threshold is not None:
+            self._relevance_threshold = max(0.0, relevance_threshold)
         if chunk_strategy is not None:
             self._chunk_strategy = chunk_strategy
         if chunk_size is not None:
@@ -225,6 +255,15 @@ class KnowledgeBase:
             key=lambda pair: pair[0],
             reverse=True,
         )
+        if self._relevance_enabled:
+            candidates = ranked[: self._retrieve_top_k]
+            candidates = [
+                (score, entry) for score, entry in candidates if score >= self._relevance_threshold
+            ]
+            return [
+                Chunk(text=entry.text, metadata={"source": entry.source})
+                for _, entry in candidates[: self._top_k]
+            ]
         return [
             Chunk(text=entry.text, metadata={"source": entry.source})
             for _, entry in ranked[: self._top_k]

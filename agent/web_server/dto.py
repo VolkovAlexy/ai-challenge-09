@@ -339,6 +339,9 @@ class KnowledgeDTO(BaseModel):
     chunk_size: int = 512
     chunk_overlap: int = 64
     top_k: int = 4
+    retrieve_top_k: int = 20
+    relevance_enabled: bool = False
+    relevance_threshold: float = 0.6
     embedding_model: str | None = None  # provider:model, если RAG сконфигурирован
     error: bool = False  # последняя индексация завершилась ошибкой
 
@@ -347,6 +350,10 @@ class KnowledgePatchRequest(BaseModel):
     """Эфемерные настройки RAG (не пишутся в config.json; сброс при рестарте)."""
 
     enabled: bool | None = None
+    top_k: int | None = Field(default=None, ge=1)
+    retrieve_top_k: int | None = Field(default=None, ge=1)
+    relevance_enabled: bool | None = None
+    relevance_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     chunk_strategy: EmbeddingStrategyValue | None = None
     chunk_size: int | None = Field(default=None, gt=0)
     chunk_overlap: int | None = Field(default=None, ge=0)
