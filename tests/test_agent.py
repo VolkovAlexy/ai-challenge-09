@@ -9,6 +9,7 @@ from agent.core.agent import CANCELLED_MARK, Agent, AgentBusyError
 from agent.core.message import ChatChunk, Role, ToolCallDelta
 from agent.core.task import TaskPhase
 from agent.llm.client import LLMError
+from agent.memory.longterm import Chunk
 
 
 class MockLLM:
@@ -50,6 +51,33 @@ def make_agent(chunks: list[ChatChunk], delay: float = 0.0) -> tuple[Agent, Mock
         system_prompt="SP",
         llm=llm,  # type: ignore[arg-type]
         config=make_config(),  # type: ignore[arg-type]
+    )
+    return agent, llm
+
+
+class FakeKnowledge:
+    """Мок KnowledgeBase: отдаёт предзаданные чанки с адресом источника."""
+
+    def __init__(self, chunks: list[Chunk] | None = None) -> None:
+        self.chunks = chunks or [
+            Chunk(text="Яблоки красные.", metadata={"source": "k/fruit.md", "chunk_id": "1"}),
+            Chunk(text="Бананы жёлтые.", metadata={"source": "k/fruit.md", "chunk_id": "2"}),
+        ]
+
+    async def search(self, query: str) -> list[Chunk]:
+        return self.chunks
+
+
+def make_rag_agent(chunks: list[ChatChunk]) -> tuple[Agent, MockLLM]:
+    """Агент с фейковой RAG-базой: _load_rag_chunks работает, поиск детерминирован."""
+    llm = MockLLM(chunks)
+    agent = Agent(
+        name="rag",
+        settings=AgentSettings.from_config(make_config()),
+        system_prompt="SP",
+        llm=llm,  # type: ignore[arg-type]
+        config=make_config(),  # type: ignore[arg-type]
+        knowledge=FakeKnowledge(),  # type: ignore[arg-type]
     )
     return agent, llm
 
@@ -250,3 +278,46 @@ def test_ask_projects_task_state_into_context() -> None:
     assert any("Активная задача" in c for c in contents)
     assert any("Этап: планирование" in c for c in contents)
     assert any("Шаг: 1 из 2" in c for c in contents)
+
+
+def test_ask_attaches_rag_sources_and_quotes() -> None:
+    """Ответ с разделами Источники/Цитаты разбирается в rag_sources/rag_quotes."""
+    content = (
+        "Яблоки бывают красными.\n\n"
+        "**Источники:**\n"
+        "- [2] источник: k/fruit.md (chunk_id: 2)\n"
+        "\n"
+        "**Цитаты:**\n"
+        "- [2] «Бананы жёлтые»."
+    )
+    agent, _ = make_rag_agent([ChatChunk(content=content), ChatChunk(finish_reason="stop")])
+    asyncio.run(agent.ask("какие фрукты?"))
+    assistant = agent.memory.history[-1]
+    assert assistant.rag_sources is not None
+    assert assistant.rag_sources[0].ref == 2
+    assert assistant.rag_sources[0].source == "k/fruit.md"
+    assert assistant.rag_quotes is not None
+    assert assistant.rag_quotes[0].text == "«Бананы жёлтые»."
+    assert assistant.rag_quotes[0].chunk_id == "2"
+    # в API-проекцию поля RAG не уходят (как и reasoning)
+    assert "rag_sources" not in assistant.to_api()
+    assert "rag_quotes" not in assistant.to_api()
+
+
+def test_ask_without_rag_answer_has_no_metadata() -> None:
+    """Ответ без разделов Источники/Цитаты — поля RAG None."""
+    agent, _ = make_rag_agent([ChatChunk(content="просто ответ"), ChatChunk(finish_reason="stop")])
+    asyncio.run(agent.ask("привет"))
+    assistant = agent.memory.history[-1]
+    assert assistant.rag_sources is None
+    assert assistant.rag_quotes is None
+
+
+def test_ask_rag_context_contains_labeled_chunks() -> None:
+    """Инжектированные чанки подписываются меткой [Источник N] и адресом."""
+    agent, llm = make_rag_agent([ChatChunk(content="ok"), ChatChunk(finish_reason="stop")])
+    asyncio.run(agent.ask("про фрукты"))
+    request = llm.calls[0][0]
+    contents = [m.content or "" for m in request.messages]
+    assert any("[Источник 1] · источник: k/fruit.md · chunk_id: 1" in c for c in contents)
+    assert any("Яблоки красные." in c for c in contents)

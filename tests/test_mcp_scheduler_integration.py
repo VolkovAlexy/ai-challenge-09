@@ -8,7 +8,7 @@ import json
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from agent.config.schema import McpServer
@@ -65,10 +65,11 @@ async def test_summary_job_aggregates_on_run() -> None:
 async def test_reminder_fires_note() -> None:
     store = SchedulerStore(Path(":memory:"))
     sched = Scheduler(store, tick=3600)
+    at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     store.add_job(
         "reminder",
         "r",
-        {"type": "at", "at": "2026-09-25T00:00:00Z"},
+        {"type": "at", "at": at},
         {"message": "сделать отчёт"},
     )
     force_due(store, "r")

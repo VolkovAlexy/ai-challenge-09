@@ -13,6 +13,21 @@ export interface UsageDTO {
   approx?: boolean;
 }
 
+export interface RagSourceDTO {
+  /** номер [N], которым модель сослалась на источник */
+  ref: number;
+  source: string;
+  chunk_id: string;
+}
+
+export interface RagQuoteDTO {
+  ref: number;
+  source: string;
+  chunk_id: string;
+  /** дословный фрагмент из найденного чанка */
+  text: string;
+}
+
 export interface MessageDTO {
   id: string;
   role: Role;
@@ -25,6 +40,10 @@ export interface MessageDTO {
   /** null у user/tool-сообщений — usage есть только у assistant */
   usage?: UsageDTO | null;
   error?: { kind: string; detail: string };
+  /** структурированные источники RAG (grounded-RAG ответ) */
+  sources?: RagSourceDTO[] | null;
+  /** цитаты из найденных чанков */
+  citations?: RagQuoteDTO[] | null;
 }
 
 export interface AgentSettingsDTO {

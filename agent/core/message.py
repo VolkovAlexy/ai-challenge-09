@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from agent.core.rag import RagQuote, RagSource
+
 
 class Role(StrEnum):
     SYSTEM = "system"
@@ -39,6 +41,9 @@ class Message(BaseModel):
     name: str | None = None
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
+    # структурированные источники и цитаты RAG (для UI; в API-проекцию не уходят)
+    rag_sources: list[RagSource] | None = None
+    rag_quotes: list[RagQuote] | None = None
 
     def to_api(self) -> dict[str, Any]:
         """Сериализация в dict формата OpenAI API (без полей со значениями None)."""

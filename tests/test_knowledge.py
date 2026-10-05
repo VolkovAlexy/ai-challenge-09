@@ -62,6 +62,19 @@ async def test_rebuild_and_search(tmp_path) -> None:
     assert any("fruit.md" in (chunk.metadata.get("source") or "") for chunk in results)
 
 
+async def test_search_exposes_chunk_id_metadata(tmp_path) -> None:
+    """Каждый чанк несёт адрес источника: source + chunk_id для grounded-RAG."""
+    (tmp_path / "fruit.md").write_text(
+        "Яблоки — красный фрукт.\n\nЯблочный пирог очень вкусный.", encoding="utf-8"
+    )
+    kb = _base(FakeEmbedder(), tmp_path)
+    assert await kb.rebuild() is True
+    results = await kb.search("apple")
+    assert results
+    assert all("chunk_id" in chunk.metadata for chunk in results)
+    assert all((chunk.metadata.get("chunk_id") or "") for chunk in results)
+
+
 async def test_search_top_k_limit(tmp_path) -> None:
     for i in range(10):
         (tmp_path / f"f{i}.md").write_text(f"apple chunk {i}", encoding="utf-8")

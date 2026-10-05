@@ -26,11 +26,12 @@ _MIN_PARAGRAPH_LEN = 120
 
 @dataclass
 class _Entry:
-    """Один проиндексированный чанк: текст, вектор, источник."""
+    """Один проиндексированный чанк: текст, вектор, адрес источника."""
 
     text: str
     vector: list[float]
     source: str
+    chunk_id: str
 
 
 def _chunk_paragraph(text: str) -> list[str]:
@@ -186,11 +187,14 @@ class KnowledgeBase:
             return _chunk_fixed(text, self._chunk_size, self._chunk_overlap)
         return _chunk_paragraph(text)
 
-    def _collect_chunks(self) -> list[tuple[str, str]]:
-        """Читает файлы из папки, возвращает список (текст, источник)."""
+    def _collect_chunks(self) -> list[tuple[str, str, str]]:
+        """Читает файлы из папки, возвращает список (текст, источник, chunk_id).
+
+        `chunk_id` — 1-based номер чанка внутри его файла-источника.
+        """
         if not self._dir.is_dir():
             return []
-        chunks: list[tuple[str, str]] = []
+        chunks: list[tuple[str, str, str]] = []
         for path in sorted(self._dir.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in _SUPPORTED_SUFFIXES:
                 continue
@@ -198,9 +202,9 @@ class KnowledgeBase:
                 text = path.read_text(encoding="utf-8")
             except OSError:
                 continue
-            for chunk in self._chunks(text):
+            for idx, chunk in enumerate(self._chunks(text), start=1):
                 if chunk:
-                    chunks.append((chunk, str(path)))
+                    chunks.append((chunk, str(path), str(idx)))
         return chunks
 
     async def rebuild(self) -> bool:
@@ -224,10 +228,10 @@ class KnowledgeBase:
         try:
             for start in range(0, len(collected), self._embed_batch_size):
                 batch = collected[start : start + self._embed_batch_size]
-                vectors = await self._embedder.embed_texts([text for text, _ in batch])
+                vectors = await self._embedder.embed_texts([text for text, _, _ in batch])
                 entries.extend(
-                    _Entry(text=text, vector=vector, source=source)
-                    for (text, source), vector in zip(batch, vectors, strict=False)
+                    _Entry(text=text, vector=vector, source=source, chunk_id=chunk_id)
+                    for (text, source, chunk_id), vector in zip(batch, vectors, strict=False)
                     if len(vector) > 0
                 )
                 self.indexed = min(start + len(batch), self.total)
@@ -261,10 +265,16 @@ class KnowledgeBase:
                 (score, entry) for score, entry in candidates if score >= self._relevance_threshold
             ]
             return [
-                Chunk(text=entry.text, metadata={"source": entry.source})
+                Chunk(
+                    text=entry.text,
+                    metadata={"source": entry.source, "chunk_id": entry.chunk_id},
+                )
                 for _, entry in candidates[: self._top_k]
             ]
         return [
-            Chunk(text=entry.text, metadata={"source": entry.source})
+            Chunk(
+                text=entry.text,
+                metadata={"source": entry.source, "chunk_id": entry.chunk_id},
+            )
             for _, entry in ranked[: self._top_k]
         ]

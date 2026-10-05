@@ -90,6 +90,11 @@ const rendered = computed(() => {
   return DOMPurify.sanitize(md.render(props.message.content));
 });
 
+/** структурированные источники RAG (grounded-RAG ответ) */
+const ragSources = computed(() => props.message.sources ?? []);
+/** цитаты из найденных чанков */
+const ragCitations = computed(() => props.message.citations ?? []);
+
 const userEscaped = computed(() => {
   if (!isUser.value) return '';
   const div = document.createElement('div');
@@ -127,6 +132,22 @@ const tokensLine = computed(() => {
           <div v-show="!reasoningExpanded" class="msg-reasoning-preview" :class="{ live }">{{ reasoningPreview }}</div>
         </div>
         <div class="msg-body md" v-html="rendered" />
+        <div v-if="ragSources.length > 0" class="msg-rag">
+          <div class="msg-rag-head">📚 Источники</div>
+          <div v-for="s in ragSources" :key="s.ref" class="msg-rag-src">
+            <span class="msg-rag-ref">[{{ s.ref }}]</span>
+            <span class="msg-rag-src-text">
+              {{ s.source }}
+              <span class="msg-rag-chunk">chunk_id: {{ s.chunk_id }}</span>
+            </span>
+          </div>
+          <div v-if="ragCitations.length > 0" class="msg-rag-cites">
+            <div v-for="q in ragCitations" :key="`${q.ref}-${q.chunk_id}`" class="msg-rag-quote">
+              <span class="msg-rag-ref">[{{ q.ref }}]</span>
+              <span class="msg-rag-quote-text">{{ q.text }}</span>
+            </div>
+          </div>
+        </div>
         <div v-if="tokensLine" class="msg-tokens">
           <n-tag size="tiny" :bordered="false">{{ tokensLine }}</n-tag>
         </div>
@@ -272,5 +293,53 @@ const tokensLine = computed(() => {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* блок структурированных источников/цитат RAG */
+.msg-rag {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--n-divider-color, #3b4261);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--n-fill-color, #1f2335) 45%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.msg-rag-head {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--n-text-color-3, #9aa5ce);
+  margin-bottom: 4px;
+}
+.msg-rag-src {
+  display: flex;
+  gap: 6px;
+  color: var(--n-text-color-2, #c9cee5);
+  margin-bottom: 2px;
+}
+.msg-rag-cites {
+  margin-top: 6px;
+}
+.msg-rag-quote {
+  display: flex;
+  gap: 6px;
+  color: var(--n-text-color-3, #a4acc8);
+  margin-bottom: 3px;
+}
+.msg-rag-ref {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--n-text-color-3, #9aa5ce);
+}
+.msg-rag-chunk {
+  opacity: 0.6;
+  font-size: 11px;
+}
+.msg-rag-src-text,
+.msg-rag-quote-text {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 </style>

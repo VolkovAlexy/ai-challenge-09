@@ -1,6 +1,6 @@
 """SchedulerStore: схема, CRUD заданий, запуски и точки данных."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -84,9 +84,10 @@ def test_complete_run_advances_interval() -> None:
 
 def test_complete_run_disables_oneshot_after_due() -> None:
     store = make_store()
-    job = store.add_job("reminder", "r", {"type": "at", "at": "2026-09-25T00:00:00Z"}, {"m": "x"})
+    at = datetime.now(UTC) + timedelta(days=1)
+    job = store.add_job("reminder", "r", {"type": "at", "at": at.isoformat()}, {"m": "x"})
     # срабатывание ПОСЛЕ момента `at` -> одноразовое задание выключается
-    store.complete_run(job, dt(2026, 9, 26, 0, 0), {"note": "x"})
+    store.complete_run(job, datetime.now(UTC) + timedelta(days=2), {"note": "x"})
     updated = store.get_job("r")
     assert updated.next_run is None
     assert updated.enabled is False

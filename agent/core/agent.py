@@ -33,6 +33,7 @@ from agent.core.message import (
     ToolCall,
     Usage,
 )
+from agent.core.rag import RagChunk, RagQuote, RagSource, parse_rag_answer
 from agent.core.task import TaskPhase, TaskState
 from agent.llm.client import LLMClient, LLMError
 from agent.memory.facts import FactsExtractor
@@ -174,7 +175,7 @@ class Agent:
         # RAG-база знаний (общая на процесс): заглушка, если не подключена
         self._knowledge = knowledge
         # чанки RAG текущего хода (вычисляются один раз в ask(), читаются _projection())
-        self._rag_chunks: list[str] | None = None
+        self._rag_chunks: list[RagChunk] | None = None
         self._task: asyncio.Task[str] | None = None
         self._stream_text = ""
         self._stream_reasoning = ""  # размышления thinking-моделей (в API-проекцию не попадают)
@@ -323,7 +324,7 @@ class Agent:
                 scratchpad=scratchpad,
                 invariants=invariants,
                 task=task,
-                rag_chunks=self._rag_chunks,
+                rag_chunks=self._format_rag_context(),
             )
         if strategy == "summary":
             return self.context_builder.build_messages(
@@ -334,7 +335,7 @@ class Agent:
                 scratchpad=scratchpad,
                 invariants=invariants,
                 task=task,
-                rag_chunks=self._rag_chunks,
+                rag_chunks=self._format_rag_context(),
             )
         # sliding / facts: скользящее окно по полной истории
         return self.context_builder.build_messages(
@@ -345,18 +346,52 @@ class Agent:
             scratchpad=scratchpad,
             invariants=invariants,
             task=task,
-            rag_chunks=self._rag_chunks,
+            rag_chunks=self._format_rag_context(),
         )
 
-    async def _load_rag_chunks(self, text: str) -> list[str]:
-        """Чанки RAG для текста запроса; деградация к пустому списку при ошибках."""
+    async def _load_rag_chunks(self, text: str) -> list[RagChunk]:
+        """Чанки RAG для текста запроса; деградация к пустому списку при ошибках.
+
+        Каждый чанк подписывается меткой [N] и адресом источника (source + chunk_id),
+        чтобы модель могла на него сослаться при цитировании.
+        """
         if self._knowledge is None:
             return []
         try:
             chunks = await self._knowledge.search(text)
         except Exception:
             return []
-        return [chunk.text for chunk in chunks]
+        result: list[RagChunk] = []
+        for label, chunk in enumerate(chunks, start=1):
+            meta = chunk.metadata
+            result.append(
+                RagChunk(
+                    label=label,
+                    source=meta.get("source", ""),
+                    chunk_id=meta.get("chunk_id", ""),
+                    text=chunk.text,
+                )
+            )
+        return result
+
+    def _format_rag_context(self) -> list[str]:
+        """Подписанные блоки RAG-чанков для контекста (метка + адрес + текст)."""
+        if not self._rag_chunks:
+            return []
+        blocks = []
+        for chunk in self._rag_chunks:
+            blocks.append(
+                f"[Источник {chunk.label}] · источник: {chunk.source}"
+                f" · chunk_id: {chunk.chunk_id}\n{chunk.text}"
+            )
+        return blocks
+
+    def _parse_rag_metadata(
+        self, text: str
+    ) -> tuple[list[RagSource] | None, list[RagQuote] | None]:
+        """Разбирает ответ модели на источники/цитаты; None — разделов нет."""
+        parsed = parse_rag_answer(text, self._rag_chunks or [])
+        return (parsed.sources or None, parsed.quotes or None)
 
     def _projected_tokens(self) -> int:
         """Вес проекции следующего запроса к LLM.
@@ -514,11 +549,14 @@ class Agent:
                     self._stream_tcs = {}
                     self._finish_reason = None
                 answer = self._extract_memory_suggestion(self._stream_text)
+                rag_sources, rag_quotes = self._parse_rag_metadata(answer)
                 assistant_msg = Message(
                     role=Role.ASSISTANT,
                     content=answer or None,
                     reasoning=self._stream_reasoning or None,
                     tool_calls=self.streaming_tool_calls or None,
+                    rag_sources=rag_sources,
+                    rag_quotes=rag_quotes,
                 )
                 self.memory.add(assistant_msg)
                 # автопилот: пока задача в выполнении/проверке и шаг/фаза продвинулись,
@@ -541,11 +579,14 @@ class Agent:
         except asyncio.CancelledError:
             if self._stream_text:
                 answer = self._extract_memory_suggestion(self._stream_text)
+                rag_sources, rag_quotes = self._parse_rag_metadata(answer)
                 self.memory.add(
                     Message(
                         role=Role.ASSISTANT,
                         content=answer + CANCELLED_MARK,
                         reasoning=self._stream_reasoning or None,
+                        rag_sources=rag_sources,
+                        rag_quotes=rag_quotes,
                     )
                 )
             self._finalize_usage(messages, assistant_added=bool(self._stream_text))

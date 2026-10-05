@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -35,8 +36,9 @@ def test_schedule_add_list_remove() -> None:
 
 async def test_schedule_run_executes_reminder() -> None:
     svc = make_service()
+    at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     svc.schedule_add(
-        "reminder", "r", {"type": "at", "at": "2026-09-25T00:00:00Z"}, {"message": "напомни"}
+        "reminder", "r", {"type": "at", "at": at}, {"message": "напомни"}
     )
     result = json.loads(await svc.schedule_run("r"))
     assert result["summary"]["note"] == "напомни"
@@ -133,8 +135,9 @@ async def test_job_ran_notify_posts_webhook() -> None:
 
     store = SchedulerStore(Path(":memory:"))
     sched = Scheduler(store, tick=3600, notify_url="http://x/notify")
+    at = (datetime.now(UTC) + timedelta(days=1)).isoformat()
     store.add_job(
-        "reminder", "r", {"type": "at", "at": "2026-09-25T00:00:00Z"}, {"message": "напомни"}
+        "reminder", "r", {"type": "at", "at": at}, {"message": "напомни"}
     )
 
     captured: list[httpx.Request] = []

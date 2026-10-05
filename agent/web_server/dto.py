@@ -27,6 +27,23 @@ class UsageDTO(BaseModel):
     approx: bool | None = None  # числа получены локальной оценкой, не от API
 
 
+class RagSourceDTO(BaseModel):
+    """Источник, использованный моделью для ответа (source + chunk_id)."""
+
+    ref: int  # номер [N], которым модель сослалась на источник
+    source: str
+    chunk_id: str
+
+
+class RagQuoteDTO(BaseModel):
+    """Цитата из найденного чанка (дословный фрагмент)."""
+
+    ref: int
+    source: str
+    chunk_id: str
+    text: str
+
+
 class MessageDTO(BaseModel):
     """Одно сообщение истории, отданное фронтенду."""
 
@@ -41,6 +58,9 @@ class MessageDTO(BaseModel):
     tool_name: str | None = None
     # имена инструментов, вызванных ассистентом (сообщение с tool_calls)
     tool_calls: list[str] | None = None
+    # структурированные источники и цитаты RAG (grounded-RAG ответ)
+    sources: list[RagSourceDTO] | None = None
+    citations: list[RagQuoteDTO] | None = None
 
 
 class AgentSettingsDTO(BaseModel):

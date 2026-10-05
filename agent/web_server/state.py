@@ -37,6 +37,8 @@ from agent.web_server.dto import (
     ProfileDTO,
     ProjectDTO,
     ProviderDTO,
+    RagQuoteDTO,
+    RagSourceDTO,
     SchedulerEventRequest,
     SessionInfoDTO,
     SystemPromptDTO,
@@ -707,6 +709,22 @@ class WebState:
             tool_calls=(
                 [call.function.name for call in message.tool_calls]
                 if message.tool_calls is not None
+                else None
+            ),
+            sources=(
+                [
+                    RagSourceDTO(ref=s.ref, source=s.source, chunk_id=s.chunk_id)
+                    for s in message.rag_sources
+                ]
+                if message.rag_sources is not None
+                else None
+            ),
+            citations=(
+                [
+                    RagQuoteDTO(ref=q.ref, source=q.source, chunk_id=q.chunk_id, text=q.text)
+                    for q in message.rag_quotes
+                ]
+                if message.rag_quotes is not None
                 else None
             ),
         )

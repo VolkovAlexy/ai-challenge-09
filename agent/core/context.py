@@ -19,6 +19,14 @@ from agent.core.task import PHASE_PROTOCOL, TaskState
 from agent.memory.longterm import LONGTERM_HEADER, LONGTERM_INSTRUCTION
 
 RAG_HEADER = "Контекст из внешних источников (RAG):"
+RAG_INSTRUCTION = (
+    "Если для ответа использовал источники выше, обязательно заверши ответ "
+    "разделом «Источники:» — список использованных источников в формате "
+    "«[N] источник: <путь> (chunk_id: <id>)», — а затем разделом «Цитаты:» — "
+    "дословные фрагменты из источников, подтверждающие ответ, каждую цитату "
+    "пометив номером [N] соответствующего источника. Нумерация [N] — это метки "
+    "[Источник N] выше. Если ни один источник не использовал, эти разделы не приводи."
+)
 MEMORY_HEADER = "Долгосрочные воспоминания:"
 SUMMARY_HEADER = "Сводка ранее в диалоге:"
 FACTS_HEADER = "Важные факты диалога (ключ: значение):"
@@ -120,7 +128,7 @@ class ContextBuilder:
         if summary:
             messages.append(Message(role=Role.SYSTEM, content=SUMMARY_HEADER + "\n" + summary))
         if rag_chunks:
-            content = RAG_HEADER + "\n" + "\n\n".join(rag_chunks)
+            content = RAG_HEADER + "\n" + "\n\n".join(rag_chunks) + "\n\n" + RAG_INSTRUCTION
             messages.append(Message(role=Role.SYSTEM, content=content))
         if memories:
             content = MEMORY_HEADER + "\n" + "\n".join(memories)
