@@ -143,7 +143,7 @@ class McpStatusTool:
 
     def __init__(self, manager: McpManager) -> None:
         self._manager = manager
-        self.parameters: dict[str, Any] = {}
+        self.parameters: dict[str, Any] = {"type": "object", "properties": {}}
 
     async def execute(self, arguments: dict[str, Any], ctx: ToolContext) -> ToolResult:
         dtos = self._manager.dto_list()
