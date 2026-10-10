@@ -107,6 +107,7 @@ class AgentDTO(BaseModel):
     context_window: int
     streaming: bool
     compacting: bool
+    session_id: str = ""  # сессия, в которую агент пишет (для связи вкладок и сессий)
     project_id: str = ""  # проект, которому принадлежит агент (и его сессия)
     scratchpad: str = ""  # рабочая память текущей задачи
     memory_suggestion: str | None = None  # предложение сохранить знание (ждёт решения UI)

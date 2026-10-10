@@ -266,11 +266,9 @@ function onProfileChange(profileId: string): void {
 }
 
 function onSessionSelect(sessionId: string): void {
-  const id = agentsStore.activeAgentId;
-  if (id !== null) {
-    void agentsStore.loadSession(id, sessionId);
-    void api.markSessionRead(sessionId).then(() => sessionsStore.loadAll());
-  }
+  // живая вкладка с этой сессией — переключение вкладки; старая — восстановление
+  void agentsStore.selectSession(sessionId);
+  void api.markSessionRead(sessionId).then(() => sessionsStore.loadAll());
 }
 
 async function onSessionBranch(sessionId: string): Promise<void> {
@@ -369,6 +367,7 @@ function onProjectMemory(projectId: string): void {
               </div>
               <template v-if="agentsStore.activeAgent !== null">
                 <ChatView
+                  :key="agentsStore.activeAgentId ?? undefined"
                   :commands="registry"
                   :model-ids="modelIds"
                   :current-model="agentsStore.activeAgent?.model ?? null"

@@ -85,6 +85,8 @@ export interface AgentDTO {
   context_window: number;
   streaming: boolean;
   compacting: boolean;
+  /** сессия, в которую вкладка пишет сейчас (для связи вкладок и карточек сессий) */
+  session_id?: string;
   /** рабочая память текущей задачи (scratchpad) */
   scratchpad: string;
   /** предложение агента сохранить знание в долговременную память */

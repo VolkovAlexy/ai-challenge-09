@@ -376,6 +376,32 @@ async def test_restore_agents_with_history() -> None:
         assert msgs[1]["content"] == "со хранение"
 
 
+async def test_agent_dto_exposes_session_id() -> None:
+    """Вкладка знает свою сессию: фронтенд по session_id связывает карточку и агента."""
+    world = build_world(
+        [ChatChunk(content="ответ"), ChatChunk(finish_reason="stop")], delay=0.05
+    )
+    async with await make_client(world) as client:
+        body = await create_agent(client)
+        agent_id = body["id"]
+        # у новой вкладки сразу есть своя сессия
+        assert body["session_id"] != ""
+        await send_one(client, agent_id, "вопрос")
+        sessions = (await client.get("/api/sessions")).json()
+        assert len(sessions) == 1
+        dto = next(
+            a for a in (await client.get("/api/agents")).json() if a["id"] == agent_id
+        )
+        assert dto["session_id"] == sessions[0]["id"]
+        # load-session переключает запись на выбранную сессию — DTO это отражает
+        other = await create_agent(client)
+        resp = await client.post(
+            f"/api/agents/{other['id']}/load-session", json={"session_id": sessions[0]["id"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["session_id"] == sessions[0]["id"]
+
+
 async def send_one(client: httpx.AsyncClient, agent_id: str, content: str) -> None:
     async with client.stream(
         "POST", f"/api/agents/{agent_id}/messages", json={"content": content}

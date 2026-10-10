@@ -302,6 +302,78 @@ describe('agents store', () => {
     expect(store.activeAgent?.history).toEqual(store.agents[d2.id]?.history);
   });
 
+  it('selectSession переключает вкладку, если сессию держит живой агент', async () => {
+    const d1 = agentDTO({ session_id: 's1' });
+    const d2 = agentDTO({ session_id: 's2' });
+    // заглушка без load-session: обращение к нему уронит тест (переключение не грузит историю)
+    const handlers = new Map<string, (body?: unknown) => Response>([
+      ['POST /agents', () => new Response(JSON.stringify(d1), { status: 200 })],
+    ]);
+    mockFetch(handlers);
+    const store = useAgentsStore();
+    await store.createAgent();
+    handlers.set('POST /agents', () => new Response(JSON.stringify(d2), { status: 200 }));
+    await store.createAgent();
+    expect(store.activeAgentId).toBe(d2.id);
+    await store.selectSession('s1');
+    expect(store.activeAgentId).toBe(d1.id);
+    expect(store.agents[d1.id]?.sessionId).toBe('s1');
+    expect(store.agents[d2.id]?.sessionId).toBe('s2');
+  });
+
+  it('selectSession восстанавливает старую сессию в активную вкладку', async () => {
+    const dto = agentDTO({ session_id: 's-live' });
+    const loaded: AgentDTO = { ...dto, session_id: 's-old' };
+    const history: MessageDTO[] = [{ id: 'm1', role: 'user', content: 'старое' }];
+    const handlers = new Map<string, (body?: unknown) => Response>([
+      ['POST /agents', () => new Response(JSON.stringify(dto), { status: 200 })],
+      [
+        `POST /agents/${dto.id}/load-session`,
+        () => new Response(JSON.stringify(loaded), { status: 200 }),
+      ],
+      [
+        `GET /agents/${dto.id}/messages`,
+        () => new Response(JSON.stringify(history), { status: 200 }),
+      ],
+    ]);
+    mockFetch(handlers);
+    const store = useAgentsStore();
+    await store.createAgent();
+    await store.selectSession('s-old');
+    expect(store.activeAgentId).toBe(dto.id);
+    expect(store.agents[dto.id]?.sessionId).toBe('s-old');
+    expect(store.agents[dto.id]?.history).toEqual(history);
+  });
+
+  it('дельты второго раунда не затирают tool-артефакт первого', async () => {
+    const dto = agentDTO();
+    mockFetch(
+      new Map([
+        ['POST /agents', () => new Response(JSON.stringify(dto), { status: 200 })],
+        [
+          `POST /agents/${dto.id}/messages`,
+          () =>
+            sseResponse([
+              { event: 'user_message', message: { id: 'u', role: 'user', content: 'в' } },
+              { event: 'delta', content: 'р1' },
+              {
+                event: 'tool_message',
+                message: { id: 'm1', role: 'assistant', content: 'р1', tool_calls: ['t'] },
+              },
+              { event: 'delta', content: 'р2' },
+              { event: 'done', message: { id: 'm2', role: 'assistant', content: 'р2' } },
+            ]),
+        ],
+      ]),
+    );
+    const store = useAgentsStore();
+    await store.createAgent();
+    await store.runStream(dto.id, 'в');
+    const state = store.agents[dto.id];
+    expect(state?.history.map((m) => m.content)).toEqual(['в', 'р1', 'р2']);
+    expect(state?.history[1]?.tool_calls).toEqual(['t']);
+  });
+
   const TASK: TaskStateDTO = {
     phase: 'execution',
     step: 2,

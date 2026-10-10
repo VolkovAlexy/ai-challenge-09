@@ -625,6 +625,7 @@ class WebState:
                 content=agent.system_prompt,
             ),
             project_id=agent.project_id,
+            session_id=record.session_id,
             context_used=context_now[0],
             context_window=agent.context_window,
             streaming=agent.is_streaming,

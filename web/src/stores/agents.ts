@@ -107,7 +107,7 @@ function stateFromDTO(dto: AgentDTO): AgentState {
     invariants: dto.invariants ?? [],
     streamingReasoning: '',
     subagents: [],
-    sessionId: null,
+    sessionId: dto.session_id ?? null,
     tokensIn: 0,
     tokensOut: 0,
     contextUsed: dto.context_used,
@@ -163,6 +163,9 @@ export const useAgentsStore = defineStore('agents', () => {
     state.systemPromptContent = dto.system_prompt.content;
     state.streaming = dto.streaming;
     state.compacting = dto.compacting;
+    if (dto.session_id !== undefined && dto.session_id !== '') {
+      state.sessionId = dto.session_id;
+    }
     state.contextUsed = dto.context_used;
     state.contextWindow = dto.context_window;
     state.scratchpad = dto.scratchpad ?? state.scratchpad;
@@ -183,7 +186,12 @@ export const useAgentsStore = defineStore('agents', () => {
     const fresh: Record<AgentId, AgentState> = {};
     const newOrder: AgentId[] = [];
     for (const dto of dtos) {
-      fresh[dto.id] = stateFromDTO(dto);
+      const existing = agents.value[dto.id];
+      if (existing && existing.streaming) {
+        fresh[dto.id] = existing;
+      } else {
+        fresh[dto.id] = stateFromDTO(dto);
+      }
       newOrder.push(dto.id);
     }
     agents.value = fresh;
@@ -197,7 +205,7 @@ export const useAgentsStore = defineStore('agents', () => {
 
   async function loadHistory(id: AgentId): Promise<void> {
     const state = agents.value[id];
-    if (state === undefined) return;
+    if (state === undefined || state.streaming) return;
     const msgs = (await api.getMessages(id)).filter((m) => !isAutopilotMessage(m));
     serverLen[id] = msgs.length;
     state.history = msgs;
@@ -265,10 +273,24 @@ export const useAgentsStore = defineStore('agents', () => {
   }
 
   async function loadSession(id: AgentId, sessionId: string): Promise<void> {
-    upsert(await api.loadSession(id, sessionId));
     const state = agents.value[id];
-    if (state !== undefined) state.sessionId = sessionId;
+    if (state !== undefined && state.streaming) return;
+    const fresh = upsert(await api.loadSession(id, sessionId));
+    fresh.sessionId = sessionId;
     await loadHistory(id);
+  }
+
+  /** Клик по карточке сессии: если сессию уже держит живая вкладка — просто
+   *  переключаемся на неё (стрим в неактивной вкладке продолжается, история
+   *  не перезагружается); иначе восстанавливаем сессию в активную вкладку. */
+  async function selectSession(sessionId: string): Promise<void> {
+    const owner = Object.values(agents.value).find((a) => a.sessionId === sessionId);
+    if (owner !== undefined) {
+      setActive(owner.id);
+      return;
+    }
+    const id = activeAgentId.value;
+    if (id !== null) await loadSession(id, sessionId);
   }
 
   /** Ветка от сохранённой сессии: новый независимый агент, становится активным. */
@@ -312,7 +334,10 @@ export const useAgentsStore = defineStore('agents', () => {
       }
       if (streamText !== '') {
         // поток закрылся без done/cancelled/error — оставляем накопленное как assistant
-        state.history.push({ id: `local-${Date.now()}`, role: 'assistant', content: streamText });
+        const last = state.history[state.history.length - 1];
+        if (last === undefined || last.id !== stubId(state)) {
+          state.history.push({ id: `local-${Date.now()}`, role: 'assistant', content: streamText });
+        }
       }
     } catch (e) {
       const status = (e as ApiErrorLike).status;
@@ -488,6 +513,7 @@ export const useAgentsStore = defineStore('agents', () => {
     patchAgent,
     clearHistory,
     loadSession,
+    selectSession,
     branchFromSession,
     runStream,
     cancelStream,
@@ -589,22 +615,28 @@ export function applyStreamEvent(state: AgentState, ev: StreamEvent): void {
   }
 }
 
+/** Составной id стрим-загушки для агента (заменяется финальным сообщением в upsertDone). */
+function stubId(state: AgentState): string {
+  return `stream-${state.id}`;
+}
+
 function applyDelta(state: AgentState, fullText: string): void {
   const last = state.history[state.history.length - 1];
-  if (last === undefined || last.role !== 'assistant') {
-    state.history.push({ id: `stream-${state.id}`, role: 'assistant', content: fullText });
-  } else {
+  // дописываем только собственную заглушку; готовый ответ/артефакт не трогаем
+  if (last !== undefined && last.id === stubId(state)) {
     last.content = fullText;
+  } else {
+    state.history.push({ id: stubId(state), role: 'assistant', content: fullText });
   }
 }
 
 /** Размышления пишутся в существующее стрим-сообщение или открывают новое (до контента). */
 function reasoningToStream(state: AgentState, reasoning: string): void {
   const last = state.history[state.history.length - 1];
-  if (last !== undefined && last.role === 'assistant') {
+  if (last !== undefined && last.id === stubId(state)) {
     last.reasoning = reasoning;
   } else {
-    state.history.push({ id: `stream-${state.id}`, role: 'assistant', content: '', reasoning });
+    state.history.push({ id: stubId(state), role: 'assistant', content: '', reasoning });
   }
 }
 

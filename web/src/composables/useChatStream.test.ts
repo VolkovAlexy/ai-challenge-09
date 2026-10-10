@@ -248,4 +248,51 @@ describe('useChatStream', () => {
     expect(state?.tokensOut).toBe(0);
     expect(state?.streaming).toBe(false);
   });
+
+  it('дельты нового раунда не затирают tool-артефакт: буфер сбрасывается', async () => {
+    const store = await seedAgent();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            'data: {"event":"user_message","message":{"id":"u","role":"user","content":"в"}}\n\n' +
+              'data: {"event":"delta","content":"р1"}\n\n' +
+              'data: {"event":"tool_message","message":{"id":"m1","role":"assistant","content":"р1","tool_calls":["t"]}}\n\n' +
+              'data: {"event":"delta","content":"р2"}\n\n' +
+              'data: {"event":"done","message":{"id":"m2","role":"assistant","content":"р2"}}\n\n',
+            { status: 200 },
+          ),
+      ),
+    );
+    const stream = useChatStream(() => 'a1');
+    const done = stream.send('в');
+    await vi.advanceTimersByTimeAsync(1000); // тики таймера внутри раундов
+    await done;
+    const state = store.agents.a1;
+    expect(state?.history.map((m) => m.content)).toEqual(['в', 'р1', 'р2']);
+    expect(state?.history[1]?.tool_calls).toEqual(['t']);
+  });
+
+  it('повторный ход не затирает завершённый ответ предыдущего', async () => {
+    const store = await seedAgent();
+    const sse = (delta: string, doneId: string) =>
+      new Response(
+        'data: {"event":"user_message","message":{"id":"u","role":"user","content":"в"}}\n\n' +
+          `data: {"event":"delta","content":"${delta}"}\n\n` +
+          `data: {"event":"done","message":{"id":"${doneId}","role":"assistant","content":"${delta}"}}\n\n`,
+        { status: 200 },
+      );
+    vi.stubGlobal('fetch', vi.fn(async () => sse('первый ответ', 'm1')));
+    const stream = useChatStream(() => 'a1');
+    await stream.send('в1');
+    vi.stubGlobal('fetch', vi.fn(async () => sse('второй', 'm3')));
+    const second = stream.send('в2');
+    await vi.advanceTimersByTimeAsync(1000);
+    await second;
+    const state = store.agents.a1;
+    const contents = state?.history.filter((m) => m.role === 'assistant').map((m) => m.content);
+    expect(contents).toEqual(['первый ответ', 'второй']);
+    expect(state?.history.filter((m) => m.role === 'user')).toHaveLength(2);
+  });
 });
